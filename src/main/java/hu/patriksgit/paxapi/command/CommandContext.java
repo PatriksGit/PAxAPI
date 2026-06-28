@@ -6,7 +6,7 @@ import java.util.Objects;
 
 /** What a handler receives. {@code path} = matched subcommand tokens; {@code args} = remaining args after the path. */
 public record CommandContext<S>(S sender, String label, List<String> path, String[] args) {
-    CommandContext {
+    public CommandContext {
         args = args.clone();
     }
     @Override public String[] args() { return args.clone(); }
