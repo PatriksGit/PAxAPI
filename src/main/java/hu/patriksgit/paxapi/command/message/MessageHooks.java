@@ -28,7 +28,7 @@ public final class MessageHooks<S extends Audience> {
     public MessageHooks<S> unknownKey(String key) { this.unknownKey = key; return this; }
     public MessageHooks<S> playerOnlyKey(String key) { this.playerOnlyKey = key; return this; }
 
-    public Consumer<S> denied() { return s -> messages.send(s, noPermissionKey); }
-    public BiConsumer<S, String> unknown() { return (s, sub) -> messages.send(s, unknownKey, Map.of("sub", sub)); }
-    public Consumer<S> playerOnly() { return s -> messages.send(s, playerOnlyKey); }
+    public Consumer<S> denied() { final String k = noPermissionKey; return s -> messages.send(s, k); }
+    public BiConsumer<S, String> unknown() { final String k = unknownKey; return (s, sub) -> messages.send(s, k, Map.of("sub", sub)); }
+    public Consumer<S> playerOnly() { final String k = playerOnlyKey; return s -> messages.send(s, k); }
 }

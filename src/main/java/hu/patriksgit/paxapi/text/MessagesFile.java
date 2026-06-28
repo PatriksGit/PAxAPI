@@ -3,11 +3,14 @@ package hu.patriksgit.paxapi.text;
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
+import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 import org.yaml.snakeyaml.error.YAMLException;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -81,14 +84,19 @@ public final class MessagesFile {
             if (in == null) throw new IOException("File does not exist and no default provided: " + file);
             Path parent = file.getParent();
             if (parent != null) Files.createDirectories(parent);
-            Files.copy(in, file);
+            try {
+                Files.copy(in, file);
+            } catch (FileAlreadyExistsException ignored) {
+                // another thread/process created the file concurrently — that's fine
+            }
         }
     }
 
-    /** Reloads from disk. Warn-once reset first, then atomic snapshot publish. */
+    /** Reloads from disk. Build new snapshot first, then atomically replace (safe even if build fails). */
     public void reload() throws IOException {
+        Snapshot fresh = buildSnapshot(file, logger);
         this.warned.clear();
-        this.snapshot = buildSnapshot(file, logger);
+        this.snapshot = fresh;
     }
 
     /** Clears the warn-once tracking cache without reloading the file. */
@@ -102,7 +110,9 @@ public final class MessagesFile {
         try (InputStream in = Files.newInputStream(file)) {
             Object root;
             try {
-                root = new Yaml().load(in);
+                LoaderOptions opts = new LoaderOptions();
+                opts.setAllowDuplicateKeys(false);
+                root = new Yaml(new SafeConstructor(opts)).load(in);
             } catch (YAMLException e) {
                 throw new IOException("Failed to parse " + file.getFileName() + ": " + e.getMessage(), e);
             }

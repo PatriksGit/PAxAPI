@@ -125,7 +125,7 @@ public final class Database implements AutoCloseable {
             }
             poolName = cfg.poolName();
         } else {
-            poolName = "MineSide-DB-" + cfg.database();
+            poolName = "PAxAPI-DB-" + cfg.database();
         }
 
         HikariConfig hc = new HikariConfig();
@@ -349,29 +349,28 @@ public final class Database implements AutoCloseable {
         Objects.requireNonNull(items, "items");
         Objects.requireNonNull(binder, "binder");
         checkNotInTx();
-        List<T> all = new ArrayList<>();
-        for (T it : items) all.add(it);
-        if (all.isEmpty()) return new int[0];
-        int[] result = new int[all.size()];
-        int written = 0;
         Connection c = null;
+        List<int[]> chunkResults = new ArrayList<>();
         inTx.set(true);
         try {
             c = ds.getConnection();
             c.setAutoCommit(false);
-            for (int start = 0; start < all.size(); start += BATCH_CHUNK) {
-                int end = Math.min(start + BATCH_CHUNK, all.size());
-                try (PreparedStatement ps = c.prepareStatement(sql)) {
-                    for (int i = start; i < end; i++) {
-                        binder.bind(ps, all.get(i));
-                        ps.addBatch();
-                    }
-                    int[] counts = ps.executeBatch();
-                    System.arraycopy(counts, 0, result, written, counts.length);
-                    written += counts.length;
+            List<T> chunk = new ArrayList<>(BATCH_CHUNK);
+            for (T item : items) {
+                chunk.add(item);
+                if (chunk.size() == BATCH_CHUNK) {
+                    chunkResults.add(executeBatchChunk(c, sql, chunk, binder));
+                    chunk.clear();
                 }
             }
+            if (!chunk.isEmpty()) chunkResults.add(executeBatchChunk(c, sql, chunk, binder));
             c.commit();
+            int total = 0;
+            for (int[] r : chunkResults) total += r.length;
+            if (total == 0) return new int[0];
+            int[] result = new int[total];
+            int written = 0;
+            for (int[] r : chunkResults) { System.arraycopy(r, 0, result, written, r.length); written += r.length; }
             return result;
         } catch (Exception e) {
             // Catch ANY throwable from the binder — a BiBinder can throw unchecked
@@ -429,6 +428,13 @@ public final class Database implements AutoCloseable {
             inTx.set(false);
             // HikariCP resets autoCommit to the pool default on return, so no manual restore.
             if (c != null) { try { c.close(); } catch (SQLException ignored) { } }
+        }
+    }
+
+    private <T> int[] executeBatchChunk(Connection c, String sql, List<T> chunk, Sql.BiBinder<T> binder) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            for (T item : chunk) { binder.bind(ps, item); ps.addBatch(); }
+            return ps.executeBatch();
         }
     }
 

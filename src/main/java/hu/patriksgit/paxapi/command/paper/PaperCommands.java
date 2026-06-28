@@ -18,6 +18,16 @@ import java.util.Map;
 public final class PaperCommands {
     private PaperCommands() {}
 
+    private static final java.lang.reflect.Method SYNC_COMMANDS;
+    static {
+        java.lang.reflect.Method m = null;
+        try {
+            m = org.bukkit.Server.class.getDeclaredMethod("syncCommands");
+            m.setAccessible(true);
+        } catch (NoSuchMethodException ignored) {}
+        SYNC_COMMANDS = m;
+    }
+
     /**
      * Registers the given spec as a Bukkit command and tab-completer.
      * Any aliases defined via {@link CommandSpec.Builder#aliases(String...)} are applied
@@ -80,9 +90,9 @@ public final class PaperCommands {
         }
 
         // Rebuild the Brigadier command tree so Paper 1.13+ clients see the new aliases.
-        // syncCommands() lives on CraftServer, not the public Server interface — use reflection.
-        try {
-            plugin.getServer().getClass().getMethod("syncCommands").invoke(plugin.getServer());
-        } catch (ReflectiveOperationException ignored) { /* not available on this build */ }
+        // syncCommands() lives on CraftServer, not the public Server interface — cached at class load.
+        if (SYNC_COMMANDS != null) {
+            try { SYNC_COMMANDS.invoke(plugin.getServer()); } catch (ReflectiveOperationException ignored) {}
+        }
     }
 }

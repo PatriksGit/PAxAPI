@@ -66,7 +66,7 @@ public final class DataAccessException extends RuntimeException {
      * NEL (U+0085), LS (U+2028), PS (U+2029) with spaces so the message stays one log line.
      */
     private static String stripControl(String s) {
-        if (s == null) return null;
+        if (s == null) return "";
         return s.replaceAll("[\\u0000-\\u001F\\u007F\\u0085\\u2028\\u2029]", " ");
     }
 

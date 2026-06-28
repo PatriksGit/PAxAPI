@@ -343,20 +343,18 @@ public final class ConfigFile {
 
     @SuppressWarnings("unchecked")
     private static Object deepImmutable(Object o) {
-        if (o instanceof Map) {
-            Map<Object, Object> src = (Map<Object, Object>) o;
+        if (o instanceof Map<?, ?> rawMap) {
+            Map<Object, Object> src = (Map<Object, Object>) rawMap;
             Map<String, Object> copy = new LinkedHashMap<>(src.size());
             for (Map.Entry<Object, Object> e : src.entrySet()) {
                 copy.put(String.valueOf(e.getKey()), deepImmutable(e.getValue()));
             }
             return Collections.unmodifiableMap(copy);
         }
-        if (o instanceof List) {
-            List<Object> src = (List<Object>) o;
+        if (o instanceof List<?> rawList) {
+            List<Object> src = (List<Object>) rawList;
             List<Object> copy = new ArrayList<>(src.size());
-            for (Object item : src) {
-                copy.add(deepImmutable(item));
-            }
+            for (Object item : src) copy.add(deepImmutable(item));
             return Collections.unmodifiableList(copy);
         }
         return o;

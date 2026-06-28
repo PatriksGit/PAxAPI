@@ -38,8 +38,10 @@ public final class VelocityCommands {
         });
     }
 
-    /** Unregisters a previously {@link #register registered} command (plugin shutdown / live reload). */
+    /** Unregisters a previously {@link #register registered} command and all its aliases (plugin shutdown / live reload). */
     public static void unregister(ProxyServer proxy, CommandSpec<CommandSource> spec) {
-        proxy.getCommandManager().unregister(spec.name());
+        CommandManager mgr = proxy.getCommandManager();
+        mgr.unregister(spec.name());
+        spec.aliases().forEach(mgr::unregister);
     }
 }
