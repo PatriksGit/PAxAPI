@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.database;
+ackage hu.patriksgit.paxapi.database;
 
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;

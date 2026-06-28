@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.command.paper;
+ackage hu.patriksgit.paxapi.command.paper;
 
 import hu.patriksgit.paxapi.command.CommandDispatcher;
 import hu.patriksgit.paxapi.command.CommandSpec;

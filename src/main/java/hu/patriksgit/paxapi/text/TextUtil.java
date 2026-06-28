@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.text;
+ackage hu.patriksgit.paxapi.text;
 
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;

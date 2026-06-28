@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.database;
+ackage hu.patriksgit.paxapi.database;
 
 import java.sql.SQLException;
 import java.util.List;

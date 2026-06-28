@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.config;
+ackage hu.patriksgit.paxapi.config;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

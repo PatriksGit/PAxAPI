@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.text;
+ackage hu.patriksgit.paxapi.text;
 
 import org.slf4j.Marker;
 import org.slf4j.event.Level;

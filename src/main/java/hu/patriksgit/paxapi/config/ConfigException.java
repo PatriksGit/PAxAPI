@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.config;
+ackage hu.patriksgit.paxapi.config;
 
 import java.io.IOException;
 

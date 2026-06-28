@@ -1,4 +1,4 @@
-package hu.patriksgit.paxapi.velocity.sound;
+ackage hu.patriksgit.paxapi.velocity.sound;
 
 import com.velocitypowered.api.proxy.Player;
 import net.kyori.adventure.key.Key;

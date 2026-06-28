@@ -1,4 +1,4 @@
-﻿package hu.patriksgit.paxapi.command.velocity;
+ackage hu.patriksgit.paxapi.command.velocity;
 
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
