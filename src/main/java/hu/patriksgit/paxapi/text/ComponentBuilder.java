@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.text;
+package hu.patriksgit.paxapi.text;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;

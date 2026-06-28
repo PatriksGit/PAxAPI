@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.command.paper;
+package hu.patriksgit.paxapi.command.paper;
 
 import hu.patriksgit.paxapi.command.ArgumentCompleter;
 import org.bukkit.Bukkit;

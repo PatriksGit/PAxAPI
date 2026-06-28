@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.command;
+package hu.patriksgit.paxapi.command;
 
 import java.util.List;
 

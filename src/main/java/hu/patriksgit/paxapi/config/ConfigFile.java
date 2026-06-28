@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.config;
+package hu.patriksgit.paxapi.config;
 
 import org.slf4j.Logger;
 import org.yaml.snakeyaml.LoaderOptions;

@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.database;
+package hu.patriksgit.paxapi.database;
 
 import org.junit.jupiter.api.*;
 import java.sql.Connection;

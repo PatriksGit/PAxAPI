@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.command.velocity;
+package hu.patriksgit.paxapi.command.velocity;
 
 import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.proxy.ProxyServer;

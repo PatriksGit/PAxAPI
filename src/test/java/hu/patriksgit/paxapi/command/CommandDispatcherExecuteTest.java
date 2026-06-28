@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.command;
+package hu.patriksgit.paxapi.command;
 
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;

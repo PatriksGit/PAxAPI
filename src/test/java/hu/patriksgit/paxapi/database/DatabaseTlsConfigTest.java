@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.database;
+package hu.patriksgit.paxapi.database;
 
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.Test;

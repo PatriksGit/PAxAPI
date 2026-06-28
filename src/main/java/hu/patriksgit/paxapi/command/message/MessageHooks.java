@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.command.message;
+package hu.patriksgit.paxapi.command.message;
 
 import hu.patriksgit.paxapi.text.MessagesFile;
 import net.kyori.adventure.audience.Audience;

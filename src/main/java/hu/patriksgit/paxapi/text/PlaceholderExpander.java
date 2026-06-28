@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.text;
+package hu.patriksgit.paxapi.text;
 
 /**
  * Soft-dependency bridge for external placeholder systems (PlaceholderAPI on Paper,

@@ -1,4 +1,4 @@
-ackage hu.patriksgit.paxapi.database;
+package hu.patriksgit.paxapi.database;
 
 import java.io.InputStream;
 import java.io.Reader;
