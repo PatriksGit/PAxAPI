@@ -56,7 +56,11 @@ public final class TextUtil {
             "click", "hover", "color", "colour", "c",
             "gradient", "rainbow", "key", "lang", "insert",
             "newline", "br", "score", "selector", "nbt",
-            "font", "transition", "pride", "shadow"
+            "font", "transition", "pride", "shadow",
+            // Named color tags — a placeholder key matching a color name would swallow the tag
+            "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
+            "gold", "gray", "dark_gray", "blue", "green", "aqua",
+            "red", "light_purple", "yellow", "white"
     );
 
     private record ExpanderConfig(PlaceholderExpander expander, boolean trusted) {}
@@ -270,10 +274,14 @@ public final class TextUtil {
             Component comp = components.get(key);
             if (comp != null) {
                 String lowerKey = key.toLowerCase(Locale.ROOT);
-                if (seen.add(lowerKey)) {
-                    resolvers.add(Placeholder.component(lowerKey, comp));
+                if (RESERVED_TAGS.contains(lowerKey)) {
+                    m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+                } else {
+                    if (seen.add(lowerKey)) {
+                        resolvers.add(Placeholder.component(lowerKey, comp));
+                    }
+                    m.appendReplacement(sb, Matcher.quoteReplacement("<" + lowerKey + ">"));
                 }
-                m.appendReplacement(sb, Matcher.quoteReplacement("<" + lowerKey + ">"));
             } else {
                 m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
             }

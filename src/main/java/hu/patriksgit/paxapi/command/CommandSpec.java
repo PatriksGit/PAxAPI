@@ -127,6 +127,17 @@ public final class CommandSpec<S> {
             child.accept(b);
             if (children.containsKey(b.name))
                 throw new IllegalArgumentException("Duplicate subcommand name '" + b.name + "' under '" + this.name + "'");
+            // Detect alias collisions at build time so they don't silently disappear in the lookup map
+            for (CommandSpec<S> existing : children.values()) {
+                for (String newAlias : b.aliases) {
+                    if (existing.name().equals(newAlias) || existing.aliases().contains(newAlias))
+                        throw new IllegalArgumentException("Alias '" + newAlias + "' on '" + b.name
+                            + "' conflicts with existing subcommand under '" + this.name + "'");
+                }
+                if (existing.aliases().contains(b.name))
+                    throw new IllegalArgumentException("Subcommand name '" + b.name
+                        + "' conflicts with an existing alias under '" + this.name + "'");
+            }
             children.put(b.name, b.build());
             return this;
         }

@@ -3,6 +3,7 @@ package hu.patriksgit.paxapi.command;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -11,10 +12,16 @@ public final class CommandDispatcher<S> {
 
     private final CommandSpec<S> root;
     private final SenderAdapter<S> adapter;
+    private final org.slf4j.Logger logger;
 
     public CommandDispatcher(CommandSpec<S> root, SenderAdapter<S> adapter) {
+        this(root, adapter, null);
+    }
+
+    public CommandDispatcher(CommandSpec<S> root, SenderAdapter<S> adapter, org.slf4j.Logger logger) {
         this.root = root;
         this.adapter = adapter;
+        this.logger = logger;
     }
 
     public CommandSpec<S> root() { return root; }
@@ -62,7 +69,8 @@ public final class CommandDispatcher<S> {
                 String token = args[i].toLowerCase(Locale.ROOT);
                 CommandSpec<S> child = node.lookup().get(token);
                 if (child != null) { path.add(token); node = child; i++; continue; }
-                if (node.children().isEmpty() && node.handler() != null) {
+                // No child matched — fall back to this node's handler (supports mixed handler+children nodes)
+                if (node.handler() != null) {
                     runHandler(node, sender, label, path, slice(args, i), effError);
                     return;
                 }
@@ -125,8 +133,20 @@ public final class CommandDispatcher<S> {
 
             if (!node.children().isEmpty() && relIndex == 0) {
                 List<String> out = new ArrayList<>();
-                for (CommandSpec<S> c : node.children().values()) {
-                    if (c.name().startsWith(lc) && canAccess(c, sender)) out.add(c.name());
+                // Suggest child names AND aliases (lookup contains both)
+                for (Map.Entry<String, CommandSpec<S>> entry : node.lookup().entrySet()) {
+                    if (entry.getKey().startsWith(lc) && canAccess(entry.getValue(), sender))
+                        out.add(entry.getKey());
+                }
+                // Also include arg[0] completers for mixed handler+children nodes
+                ArgumentCompleter<S> ac0 = node.argCompleters().get(0);
+                if (ac0 != null) {
+                    List<String> extra = ac0.complete(sender, slice(args, i), current);
+                    if (extra != null) {
+                        for (String s : extra) {
+                            if (s.toLowerCase(Locale.ROOT).startsWith(lc) && !out.contains(s)) out.add(s);
+                        }
+                    }
                 }
                 return out;
             }
@@ -140,6 +160,7 @@ public final class CommandDispatcher<S> {
             }
             return out;
         } catch (Throwable e) {
+            if (logger != null) logger.warn("Tab completion failed for '{}': {}", root.name(), e.getMessage());
             return List.of();
         }
     }
