@@ -19,7 +19,16 @@ public final class VelocityCommands {
      * shutdown or live reload) call {@link #unregister(ProxyServer, CommandSpec)}.
      */
     public static void register(ProxyServer proxy, Object plugin, CommandSpec<CommandSource> spec) {
-        CommandDispatcher<CommandSource> dispatcher = new CommandDispatcher<>(spec, VelocitySenderAdapter.INSTANCE);
+        register(proxy, plugin, spec, null);
+    }
+
+    /**
+     * Registers the given spec as a Velocity command with a logger forwarded to the dispatcher
+     * so tab-completion exceptions are logged rather than silently swallowed.
+     */
+    public static void register(ProxyServer proxy, Object plugin, CommandSpec<CommandSource> spec,
+                                org.slf4j.Logger logger) {
+        CommandDispatcher<CommandSource> dispatcher = new CommandDispatcher<>(spec, VelocitySenderAdapter.INSTANCE, logger);
         CommandManager mgr = proxy.getCommandManager();
         CommandMeta meta = mgr.metaBuilder(spec.name())
             .aliases(spec.aliases().toArray(new String[0]))

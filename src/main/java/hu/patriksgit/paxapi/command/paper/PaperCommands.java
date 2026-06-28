@@ -34,12 +34,21 @@ public final class PaperCommands {
      * to the Paper command map, equivalent to declaring them in {@code plugin.yml}.
      */
     public static void register(JavaPlugin plugin, CommandSpec<CommandSender> spec) {
+        register(plugin, spec, null);
+    }
+
+    /**
+     * Registers the given spec as a Bukkit command and tab-completer.
+     * {@code logger} is forwarded to the dispatcher so tab-completion exceptions are logged
+     * rather than silently swallowed — pass {@code plugin.getSLF4JLogger()} for best results.
+     */
+    public static void register(JavaPlugin plugin, CommandSpec<CommandSender> spec, org.slf4j.Logger logger) {
         PluginCommand cmd = plugin.getCommand(spec.name());
         if (cmd == null) {
             throw new IllegalStateException("Command '" + spec.name()
                 + "' is not declared in plugin.yml — add it under `commands:` before registering.");
         }
-        CommandDispatcher<CommandSender> dispatcher = new CommandDispatcher<>(spec, PaperSenderAdapter.INSTANCE);
+        CommandDispatcher<CommandSender> dispatcher = new CommandDispatcher<>(spec, PaperSenderAdapter.INSTANCE, logger);
         cmd.setExecutor((sender, command, label, args) -> { dispatcher.execute(sender, label, args); return true; });
         cmd.setTabCompleter((TabCompleter) (sender, command, alias, args) -> dispatcher.complete(sender, args));
         if (!spec.aliases().isEmpty()) {

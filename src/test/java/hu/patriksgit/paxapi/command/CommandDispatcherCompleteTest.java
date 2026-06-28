@@ -90,8 +90,8 @@ class CommandDispatcherCompleteTest {
         assertEquals(List.of("reload", "setspawn"), suggestions);
     }
 
-    // FIX 1: alias resolves in complete descent but only canonical name is suggested
-    @Test void aliasResolvesForDescentButCanonicalNameSuggested() {
+    // Alias appears in suggestions alongside canonical name; alias-based descent works
+    @Test void aliasSuggestedAndDescentResolvesViaAlias() {
         CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("mineauth")
             .group("maintenance", m -> m
                 .aliases("maint")
@@ -99,12 +99,15 @@ class CommandDispatcherCompleteTest {
                 .sub("off", c -> {}))
             .build();
         FakeSender s = FakeSender.player();
-        // Suggestions at root level should list "maintenance" (canonical), not "maint"
+        // Both canonical name and alias should appear in root suggestions
         List<String> rootSuggestions = dispatcher(spec).complete(s, new String[]{""});
-        assertEquals(List.of("maintenance"), rootSuggestions);
-        // Alias should NOT appear in suggestions
-        assertFalse(rootSuggestions.contains("maint"));
-        // Descent via alias should resolve (suggest children of maintenance)
+        assertTrue(rootSuggestions.contains("maintenance"));
+        assertTrue(rootSuggestions.contains("maint"));
+        // Partial alias prefix should surface the alias
+        List<String> partial = dispatcher(spec).complete(s, new String[]{"mai"});
+        assertTrue(partial.contains("maintenance"));
+        assertTrue(partial.contains("maint"));
+        // Descent via alias should resolve — suggests children of maintenance
         List<String> childSuggestions = dispatcher(spec).complete(s, new String[]{"maint", ""});
         assertEquals(List.of("on", "off"), childSuggestions);
     }

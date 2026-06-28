@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -121,6 +122,10 @@ public final class MessagesFile {
                         file.getFileName());
                 return new Snapshot(Map.of(), Map.of(), "");
             }
+            if (!(root instanceof Map)) {
+                throw new IOException(file.getFileName() + " root must be a YAML mapping, not "
+                        + root.getClass().getSimpleName());
+            }
             Map<String, String> singles = new HashMap<>();
             Map<String, List<String>> lists = new HashMap<>();
             flatten("", root, singles, lists, logger, file.getFileName().toString());
@@ -199,6 +204,7 @@ public final class MessagesFile {
      * {@code sendChat} methods with an {@code Audience}.
      */
     public Component get(String key, Map<String, String> placeholders) {
+        Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
         String value = s.singles().get(key);
         if (value == null) {
@@ -229,6 +235,7 @@ public final class MessagesFile {
 
     /** Line-by-line Components with placeholder substitution. */
     public List<Component> getList(String key, Map<String, String> placeholders) {
+        Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
         List<String> rawList = s.lists().get(key);
         if (rawList != null) {
@@ -258,6 +265,7 @@ public final class MessagesFile {
 
     /** Sends with placeholders — handles both string and list YAML values. */
     public void send(Audience target, String key, Map<String, String> placeholders) {
+        Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
         String p = prefix(s);
         List<String> rawList = s.lists().get(key);
@@ -281,6 +289,7 @@ public final class MessagesFile {
 
     /** Sends {@code key} with placeholders to every audience in {@code targets}. */
     public void broadcast(Iterable<? extends Audience> targets, String key, Map<String, String> placeholders) {
+        Objects.requireNonNull(key, "key");
         if (targets == null) return;
         for (Audience target : targets) send(target, key, placeholders);
     }
@@ -300,6 +309,7 @@ public final class MessagesFile {
      * {@code sendChat} methods with an {@code Audience}.
      */
     public Component formatChat(String key, Map<String, Component> components) {
+        Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
         String raw = s.singles().get(key);
         if (raw == null) { warnMissing(key); return Component.empty(); }
@@ -342,6 +352,7 @@ public final class MessagesFile {
      * which need raw strings so TextUtil can apply its PlaceholderExpander.
      */
     private List<String> resolvedList(String key) {
+        Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
         String p = prefix(s);
         List<String> rawList = s.lists().get(key);
