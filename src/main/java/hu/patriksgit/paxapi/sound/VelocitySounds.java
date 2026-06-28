@@ -1,4 +1,4 @@
-package hu.patriksgit.paxapi.velocity.sound;
+package hu.patriksgit.paxapi.sound;
 
 import com.velocitypowered.api.proxy.Player;
 import net.kyori.adventure.key.Key;
@@ -7,9 +7,16 @@ import net.kyori.adventure.sound.Sound;
 import java.util.Locale;
 import java.util.Objects;
 
-public final class VelocitySound {
+/**
+ * One-line sound playback for Velocity. Always uses {@link Sound.Emitter#self()}
+ * so the sound plays at the player's own position (required on Velocity 3.3+).
+ *
+ * <p>Sound keys are lowercased automatically — {@code "ENTITY.PLAYER.LEVELUP"} and
+ * {@code "entity.player.levelup"} are treated identically.
+ */
+public final class VelocitySounds {
 
-    private VelocitySound() {}
+    private VelocitySounds() {}
 
     public static void play(Player player, String soundKey) {
         play(player, soundKey, Sound.Source.MASTER, 1.0f, 1.0f);
