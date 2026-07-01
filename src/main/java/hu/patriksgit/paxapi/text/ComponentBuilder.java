@@ -61,13 +61,26 @@ public final class ComponentBuilder {
         return this;
     }
 
-    /** Click: suggest a command (fills the chat bar). Last click call wins. */
+    /**
+     * Click: suggest a command (fills the chat bar). Last click call wins.
+     *
+     * <p><b>Security:</b> {@code command} is trusted developer input. Never build it from
+     * unescaped player-controlled text — a viewer clicking it would run/pre-fill the crafted
+     * command. Interpolate untrusted values as {@link #placeholder placeholders} (which are
+     * injection-safe) inside the display text, not into this command string.
+     */
     public ComponentBuilder suggest(String command) {
         this.clickEvent = ClickEvent.suggestCommand(command != null ? command : "");
         return this;
     }
 
-    /** Click: run a command immediately. Last click call wins. */
+    /**
+     * Click: run a command immediately. Last click call wins.
+     *
+     * <p><b>Security:</b> {@code command} is trusted developer input and executes with the
+     * <em>clicking viewer's</em> permissions. Never build it from player-controlled text — a
+     * staff member clicking a crafted message would run the attacker's command.
+     */
     public ComponentBuilder run(String command) {
         this.clickEvent = ClickEvent.runCommand(command != null ? command : "");
         return this;

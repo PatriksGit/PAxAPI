@@ -57,7 +57,7 @@ class DatabaseTlsConfigTest {
 
     @Test void poolNameDerivedFromDatabaseByDefault() {
         try (Database d = new Database(base(), LoggerFactory.getLogger("t"))) {
-            assertEquals("MineSide-DB-db", ((HikariDataSource) d.dataSource()).getPoolName());
+            assertEquals("PAxAPI-DB-db", ((HikariDataSource) d.dataSource()).getPoolName());
         }
     }
 

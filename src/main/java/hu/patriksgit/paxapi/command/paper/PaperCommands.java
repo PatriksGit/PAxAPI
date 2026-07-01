@@ -71,37 +71,48 @@ public final class PaperCommands {
     }
 
     private static void applyAliases(JavaPlugin plugin, PluginCommand cmd, List<String> aliases) {
-        SimpleCommandMap smap = (SimpleCommandMap) plugin.getServer().getCommandMap();
-        Map<String, Command> known = smap.getKnownCommands();
-        String prefix = plugin.getDescription().getName().toLowerCase(Locale.ROOT);
-        String canonical = cmd.getName().toLowerCase(Locale.ROOT);
+        // getCommandMap()/getKnownCommands() are CraftBukkit internals — a future server build
+        // could change their type or remove them. Guard the whole block so a failed alias sync
+        // logs a warning instead of aborting the plugin's command registration.
+        try {
+            SimpleCommandMap smap = (SimpleCommandMap) plugin.getServer().getCommandMap();
+            Map<String, Command> known = smap.getKnownCommands();
+            String prefix = plugin.getDescription().getName().toLowerCase(Locale.ROOT);
+            String canonical = cmd.getName().toLowerCase(Locale.ROOT);
 
-        // Remove stale alias entries (preserve canonical name and its prefixed form).
-        // Collect keys first — Paper 1.20.6+ may return getKnownCommands() as a view
-        // whose entry-set iterator does not support remove(), causing UnsupportedOperationException
-        // if we call entrySet().removeIf() directly.
-        List<String> stale = new ArrayList<>();
-        for (Map.Entry<String, Command> e : known.entrySet()) {
-            if (e.getValue() == cmd
-                    && !e.getKey().equals(canonical)
-                    && !e.getKey().equals(prefix + ":" + canonical)) {
-                stale.add(e.getKey());
+            // Remove stale alias entries (preserve canonical name and its prefixed form).
+            // Collect keys first — Paper 1.20.6+ may return getKnownCommands() as a view
+            // whose entry-set iterator does not support remove(), causing UnsupportedOperationException
+            // if we call entrySet().removeIf() directly.
+            List<String> stale = new ArrayList<>();
+            for (Map.Entry<String, Command> e : known.entrySet()) {
+                if (e.getValue() == cmd
+                        && !e.getKey().equals(canonical)
+                        && !e.getKey().equals(prefix + ":" + canonical)) {
+                    stale.add(e.getKey());
+                }
             }
-        }
-        stale.forEach(known::remove);
+            stale.forEach(known::remove);
 
-        cmd.setAliases(new ArrayList<>(aliases));
+            cmd.setAliases(new ArrayList<>(aliases));
 
-        for (String alias : aliases) {
-            String lc = alias.toLowerCase(Locale.ROOT);
-            known.put(lc, cmd);
-            known.put(prefix + ":" + lc, cmd);
-        }
+            for (String alias : aliases) {
+                String lc = alias.toLowerCase(Locale.ROOT);
+                known.put(lc, cmd);
+                known.put(prefix + ":" + lc, cmd);
+            }
 
-        // Rebuild the Brigadier command tree so Paper 1.13+ clients see the new aliases.
-        // syncCommands() lives on CraftServer, not the public Server interface — cached at class load.
-        if (SYNC_COMMANDS != null) {
-            try { SYNC_COMMANDS.invoke(plugin.getServer()); } catch (ReflectiveOperationException ignored) {}
+            // Rebuild the Brigadier command tree so Paper 1.13+ clients see the new aliases.
+            // syncCommands() lives on CraftServer, not the public Server interface — cached at class load.
+            if (SYNC_COMMANDS != null) {
+                try { SYNC_COMMANDS.invoke(plugin.getServer()); } catch (ReflectiveOperationException ignored) {}
+            }
+        } catch (RuntimeException e) {
+            // Covers ClassCastException (getCommandMap() type change) and any other unexpected
+            // internal-API failure. Reflective ReflectiveOperationException from syncCommands is
+            // already swallowed above.
+            plugin.getSLF4JLogger().warn("Alias sync failed for command '{}' — aliases may be unavailable "
+                + "until restart. Cause: {}", cmd.getName(), e.toString());
         }
     }
 }

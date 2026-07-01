@@ -144,6 +144,12 @@ public final class TextUtil {
      * <p>A {@code RESERVED_TAGS}-ban szereplő kulcsok ({@code reset}, {@code bold} stb.)
      * nem regisztrálódnak placeholder-ként, így a beépített MiniMessage tag-ek nem
      * árnyékolhatók el. A foglalt kulcsú {@code %key%} tokenek szó szerint maradnak.
+     *
+     * <p><b>Biztonság:</b> a {@code text} (sablon) MEGBÍZHATÓ fejlesztői/config input —
+     * a benne lévő MiniMessage tagek ({@code <click>}, {@code <hover>} stb.) érvényesülnek.
+     * SOHA ne add át ide közvetlenül a játékos által gépelt szöveget: azt kizárólag
+     * {@code placeholders} ÉRTÉKKÉNT add be (az injection-safe, a tagek literálisan
+     * jelennek meg), vagy használd a {@link #parseLegacyOnly(String)} metódust.
      */
     public static Component parse(String text, Map<String, String> placeholders) {
         if (text == null) return Component.empty();
