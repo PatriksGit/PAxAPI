@@ -191,6 +191,8 @@ boolean alive = db.ping(10);           // saját timeout másodpercben
 CompletableFuture<Boolean> future = db.pingAsync(async);
 ```
 
+⚠️ `ping()`/`pingAsync()` is saját pool-connectiont nyit, ezért — ugyanúgy, mint a query/update/tx/batch helperek — ha `tx()`/`batch()` body-ból hívod, ez is `DataAccessException`-t dob.
+
 A HikariCP magától újra próbál kapcsolatot nyitni, ha kérsz egy connectiont — de nincs proaktív jelzés, ha a DB **futás közben** hal meg és jön vissza. Erre van a `watchConnection`:
 
 ```java
