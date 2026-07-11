@@ -95,8 +95,7 @@ public final class ConfigFile {
      */
     public ConfigFile section(String path) {
         Objects.requireNonNull(path, "path");
-        String full = pathPrefix.isEmpty() ? path : pathPrefix + "." + path;
-        return new ConfigFile(root, full, logger);
+        return new ConfigFile(root, fullKey(path), logger);
     }
 
     /**
@@ -201,6 +200,16 @@ public final class ConfigFile {
             if (n instanceof Integer || n instanceof Long || n instanceof Short || n instanceof Byte) {
                 return n.longValue();
             }
+            // BigInteger only ever arises here when SafeConstructor's YAML int resolver already
+            // determined the value exceeds long range — always reject outright. Do NOT attempt
+            // double-based recovery: casting Long.MAX_VALUE back to double rounds UP to exactly
+            // 2^63 (doubles near 2^63 are spaced 1024 apart, and MAX_VALUE is only 1 below 2^63),
+            // which made the old "(double) l == d" check spuriously pass for BigInteger values
+            // one past either boundary — silently returning MAX_VALUE/MIN_VALUE as if validated.
+            if (n instanceof java.math.BigInteger) {
+                logger.warn("Config '{}' value {} is out of long range — using {}.", fullKey(key), val, def);
+                return def;
+            }
             // floating-point type: accept only if no fractional part and within long range
             double d = n.doubleValue();
             if (d == Math.rint(d)) {
@@ -253,6 +262,41 @@ public final class ConfigFile {
         return def;
     }
 
+    /**
+     * Returns the float value at {@code key}, or {@code def} if missing or wrong type. Useful
+     * for Minecraft's float-typed conventions (sound volume/pitch, etc.).
+     */
+    public float getFloat(String key, float def) {
+        Object val = getRaw(key);
+        if (val instanceof Number n) {
+            double d = n.doubleValue();
+            if (!Double.isFinite(d)) {
+                logger.warn("Config '{}' value {} is not a finite float — using {}.", fullKey(key), val, def);
+                return def;
+            }
+            float f = (float) d;
+            if (!Float.isFinite(f)) {
+                logger.warn("Config '{}' value {} is out of float range — using {}.", fullKey(key), val, def);
+                return def;
+            }
+            return f;
+        }
+        if (val instanceof String s) {
+            try {
+                float f = Float.parseFloat(s.trim());
+                if (!Float.isFinite(f)) {
+                    logger.warn("Config '{}' value {} is not a finite float — using {}.", fullKey(key), val, def);
+                    return def;
+                }
+                return f;
+            } catch (NumberFormatException ignored) {
+                // fall through to warn
+            }
+        }
+        if (val != null) warnType(key, "float", val);
+        return def;
+    }
+
     /** Returns the boolean value at {@code key}, or {@code def} if missing or wrong type. */
     public boolean getBoolean(String key, boolean def) {
         Object val = getRaw(key);
@@ -284,6 +328,11 @@ public final class ConfigFile {
         if (val instanceof String s) return List.of(s);
         if (val != null) warnType(key, "list", val);
         return def;
+    }
+
+    /** As {@link #getStringList(String, List)}, defaulting to an empty list when missing/wrong-typed. */
+    public List<String> getStringList(String key) {
+        return getStringList(key, List.of());
     }
 
     /**
@@ -341,21 +390,42 @@ public final class ConfigFile {
         }
     }
 
+    private static Object deepImmutable(Object o) throws ConfigException {
+        return deepImmutable(o, new java.util.IdentityHashMap<>());
+    }
+
+    /**
+     * {@code visiting} tracks containers currently on the walk's ANCESTOR path (entered, not
+     * yet finished) — not "ever seen". A YAML anchor reused in two unrelated sibling keys
+     * (e.g. {@code defaults: &d ... ; x: *d ; y: *d}) is legitimate, common aliasing and must
+     * not be flagged; only a container that is its OWN ancestor (a true cycle, e.g.
+     * {@code a: &x \n  loop: *x}) is a problem. SnakeYAML's composer registers an anchor before
+     * composing its children, so this is legal, safely-constructed YAML — but walking it here
+     * with no cycle guard recurses forever (StackOverflowError). Entries are removed in a
+     * finally block on exit so completed subtrees don't poison later, unrelated references.
+     */
     @SuppressWarnings("unchecked")
-    private static Object deepImmutable(Object o) {
-        if (o instanceof Map<?, ?> rawMap) {
-            Map<Object, Object> src = (Map<Object, Object>) rawMap;
-            Map<String, Object> copy = new LinkedHashMap<>(src.size());
-            for (Map.Entry<Object, Object> e : src.entrySet()) {
-                copy.put(String.valueOf(e.getKey()), deepImmutable(e.getValue()));
+    private static Object deepImmutable(Object o, Map<Object, Boolean> visiting) throws ConfigException {
+        if (o instanceof Map<?, ?> || o instanceof List<?>) {
+            if (visiting.put(o, Boolean.TRUE) != null) {
+                throw new ConfigException("Config contains a self-referential YAML anchor/alias — not supported");
             }
-            return Collections.unmodifiableMap(copy);
-        }
-        if (o instanceof List<?> rawList) {
-            List<Object> src = (List<Object>) rawList;
-            List<Object> copy = new ArrayList<>(src.size());
-            for (Object item : src) copy.add(deepImmutable(item));
-            return Collections.unmodifiableList(copy);
+            try {
+                if (o instanceof Map<?, ?> rawMap) {
+                    Map<Object, Object> src = (Map<Object, Object>) rawMap;
+                    Map<String, Object> copy = new LinkedHashMap<>(src.size());
+                    for (Map.Entry<Object, Object> e : src.entrySet()) {
+                        copy.put(String.valueOf(e.getKey()), deepImmutable(e.getValue(), visiting));
+                    }
+                    return Collections.unmodifiableMap(copy);
+                }
+                List<Object> src = (List<Object>) o;
+                List<Object> copy = new ArrayList<>(src.size());
+                for (Object item : src) copy.add(deepImmutable(item, visiting));
+                return Collections.unmodifiableList(copy);
+            } finally {
+                visiting.remove(o);
+            }
         }
         return o;
     }

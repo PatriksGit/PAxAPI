@@ -2,6 +2,7 @@ package hu.patriksgit.paxapi.text;
 
 import net.kyori.adventure.audience.Audience;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.kyori.adventure.title.Title;
 import org.junit.jupiter.api.AfterEach;
@@ -26,6 +27,15 @@ class TextUtilTitleTest {
 
     private static String plain(Component c) {
         return PlainTextComponentSerializer.plainText().serialize(c);
+    }
+
+    /** Recursively checks whether {@code c} or any child carries {@code color} — root-only would miss a nested node. */
+    private static boolean componentTreeContainsColor(Component c, NamedTextColor color) {
+        if (c.color() == color) return true;
+        for (Component child : c.children()) {
+            if (componentTreeContainsColor(child, color)) return true;
+        }
+        return false;
     }
 
     /** Audience that records the last Title passed to {@code showTitle}. */
@@ -116,5 +126,16 @@ class TextUtilTitleTest {
         Title t = a.titles.get(0);
         assertEquals("Hi Steve", plain(t.title()));
         assertEquals("Bye Steve", plain(t.subtitle()));
+    }
+
+    @Test
+    void titleAppliesComponentPlaceholdersColored() {
+        TitleAudience a = new TitleAudience();
+        Component prefix = TextUtil.parse("&c[Tag]&r ");
+        TextUtil.sendTitle(a, List.of("%prefix%Hi"), null, java.util.Map.of("prefix", prefix));
+        Title t = a.titles.get(0);
+        assertEquals("[Tag] Hi", plain(t.title()));
+        assertTrue(componentTreeContainsColor(t.title(), NamedTextColor.RED),
+                "the prefix must actually carry the RED color, not just avoid literal &c codes in the flattened text");
     }
 }

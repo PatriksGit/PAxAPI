@@ -257,6 +257,28 @@ class TextUtilTest {
         assertEquals("Hi Tomi\nBye Tomi", plain(c));
     }
 
+    @Test
+    void joinLinesWithComponentPlaceholdersColored() {
+        Component prefix = TextUtil.parse("&c[Tag]&r ");
+        Component c = TextUtil.joinLines(List.of("%prefix%A", "%prefix%B"), null, Map.of("prefix", prefix));
+        assertEquals("[Tag] A\n[Tag] B", plain(c));
+        assertTrue(componentTreeContainsColor(c, NamedTextColor.RED),
+                "the prefix must actually carry the RED color, not just avoid literal &c codes in the flattened text");
+    }
+
+    // ── sendActionBar() ────────────────────────────────────────────────────────
+
+    @Test
+    void sendActionBarWithComponentPlaceholdersColored() {
+        CapturingAudience a = new CapturingAudience();
+        Component prefix = TextUtil.parse("&c[Tag]&r ");
+        TextUtil.sendActionBar(a, List.of("%prefix%Hi"), null, Map.of("prefix", prefix));
+        assertEquals(1, a.actionBars.size());
+        assertEquals("[Tag] Hi", plain(a.actionBars.get(0)));
+        assertTrue(componentTreeContainsColor(a.actionBars.get(0), NamedTextColor.RED),
+                "the prefix must actually carry the RED color, not just avoid literal &c codes in the flattened text");
+    }
+
     // ── PlaceholderExpander ──────────────────────────────────────────────────
 
     @Test
@@ -281,6 +303,28 @@ class TextUtilTest {
         TextUtil.sendChat(audience, List.of("hi"));
         assertEquals(1, capturedContexts.size());
         assertSame(audience, capturedContexts.get(0));
+    }
+
+    // a broken third-party PAPI/MiniPlaceholders bridge must not crash every plugin sharing
+    // this library instance — fall back to the unexpanded line, same as safeDeserialize does
+    // for malformed MiniMessage.
+    @Test
+    void throwingExpanderDoesNotCrashSendChatAndFallsBackToOriginalLine() {
+        TextUtil.setExpander((text, ctx) -> { throw new RuntimeException("bridge is broken"); });
+        CapturingAudience a = new CapturingAudience();
+        assertDoesNotThrow(() -> TextUtil.sendChat(a, "hello [EXT]"));
+        assertEquals("hello [EXT]", plain(a.received.get(0)));
+    }
+
+    @Test
+    void throwingExpanderDoesNotCrashSendActionBarAndFallsBackToOriginalLines() {
+        TextUtil.setExpander((text, ctx) -> { throw new RuntimeException("bridge is broken"); });
+        CapturingAudience a = new CapturingAudience();
+        assertDoesNotThrow(() -> TextUtil.sendActionBar(a, List.of("line one", "line two")));
+        assertEquals(1, a.actionBars.size());
+        String text = plain(a.actionBars.get(0));
+        assertTrue(text.contains("line one") && text.contains("line two"),
+                "both original lines must survive the fallback; got: " + text);
     }
 
     // ── strip() ──────────────────────────────────────────────────────────────
@@ -410,6 +454,56 @@ class TextUtilTest {
         assertTrue(componentTreeContainsDecoration(result, net.kyori.adventure.text.format.TextDecoration.BOLD));
     }
 
+    // ── parse() mixed String + Component placeholders ────────────────────────
+    // Supports MessagesFile's multi-prefix auto-injection: config-authored prefixes are
+    // Component-valued (pre-parsed, so their own &-codes render as color) while caller-supplied
+    // values stay String-valued (unparsed, injection-safe) in the very same call.
+
+    @Test
+    void parseMixedResolvesComponentPlaceholderColored() {
+        Component prefix = TextUtil.parse("&c[Tag]&r ");
+        Component result = TextUtil.parse("%prefix%Hi", null, Map.of("prefix", prefix));
+        assertEquals("[Tag] Hi", plain(result));
+        assertTrue(componentTreeContainsColor(result, NamedTextColor.RED),
+                "the prefix must actually carry the RED color, not just avoid literal &c codes in the flattened text");
+    }
+
+    @Test
+    void parseMixedResolvesStringPlaceholderUnparsed() {
+        Component result = TextUtil.parse("Hi %name%!", Map.of("name", "<bold>H</bold>"), null);
+        assertEquals("Hi <bold>H</bold>!", plain(result));
+    }
+
+    @Test
+    void parseMixedResolvesBothKindsInSameTemplate() {
+        Component prefix = TextUtil.parse("&c[Tag]&r ");
+        Component result = TextUtil.parse("%prefix%Hi %name%!", Map.of("name", "Steve"), Map.of("prefix", prefix));
+        assertEquals("[Tag] Hi Steve!", plain(result));
+        assertTrue(componentTreeContainsColor(result, NamedTextColor.RED),
+                "the prefix must actually carry the RED color, not just avoid literal &c codes in the flattened text");
+    }
+
+    @Test
+    void parseMixedStringPlaceholderWinsOnKeyCollision() {
+        Component componentVal = Component.text("FROM_COMPONENT");
+        Component result = TextUtil.parse("%x%", Map.of("x", "FROM_STRING"), Map.of("x", componentVal));
+        assertEquals("FROM_STRING", plain(result));
+    }
+
+    @Test
+    void parseMixedBothMapsNullBehavesLikeNoPlaceholders() {
+        Component result = TextUtil.parse("&aHello %name%", null, null);
+        assertEquals("Hello %name%", plain(result));
+    }
+
+    @Test
+    void parseMixedReservedTagKeySkippedForComponentMap() {
+        Component result = TextUtil.parse("<bold>%bold%</bold>", null, Map.of("bold", Component.text("x")));
+        assertEquals("%bold%", plain(result), "a reserved tag name must be skipped as a placeholder key, left literal");
+        assertTrue(componentTreeContainsDecoration(result, TextDecoration.BOLD),
+                "the built-in <bold> tag must still apply, not be shadowed by a 'bold' placeholder key");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private static boolean componentTreeContainsDecoration(Component c, TextDecoration deco) {
@@ -449,10 +543,16 @@ class TextUtilTest {
 
     private static final class CapturingAudience implements Audience {
         final List<Component> received = new ArrayList<>();
+        final List<Component> actionBars = new ArrayList<>();
 
         @Override
         public void sendMessage(Component message) {
             received.add(message);
+        }
+
+        @Override
+        public void sendActionBar(Component message) {
+            actionBars.add(message);
         }
     }
 

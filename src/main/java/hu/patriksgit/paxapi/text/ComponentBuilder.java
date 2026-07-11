@@ -49,7 +49,15 @@ public final class ComponentBuilder {
         return this;
     }
 
-    /** Hover text — parsed with legacy + hex + MiniMessage. */
+    /**
+     * Hover text — parsed with legacy + hex + MiniMessage.
+     *
+     * <p><b>Security:</b> {@code hoverText} is trusted developer input, parsed as live
+     * MiniMessage. Unlike {@link #suggest} / {@link #run}, untrusted text here carries no
+     * command-execution risk (tooltips aren't clickable) — the risk is visual/formatting
+     * spoofing, e.g. a player name containing {@code <red><bold>FAKE STAFF WARNING} reformatting
+     * the tooltip. Interpolate untrusted values as {@link #placeholder placeholders} instead.
+     */
     public ComponentBuilder hover(String hoverText) {
         this.hoverComponent = hoverText != null ? TextUtil.parse(hoverText) : null;
         return this;

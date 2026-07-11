@@ -73,6 +73,25 @@ class CommandSpecTest {
             () -> CommandSpec.root("x").aliases(""));
     }
 
+    // Aliases commonly come from config as a List<String> — 4 call sites in the consuming
+    // plugin repeat `.aliases(list.toArray(new String[0]))`. This helper removes that. It's a
+    // distinctly-named method, not an aliases(List<String>) overload, so it can never make an
+    // existing unqualified `.aliases(null)` call ambiguous (verified: an overload would).
+    @Test void aliasesFromBehavesLikeVarargs() {
+        CommandSpec<Object> spec = CommandSpec.root("x").aliasesFrom(List.of("a", "b")).build();
+        assertEquals(List.of("a", "b"), spec.aliases());
+    }
+
+    @Test void aliasesFromValidatesElementsSameAsVarargs() {
+        assertThrows(IllegalArgumentException.class,
+            () -> CommandSpec.root("x").aliasesFrom(List.of("")));
+    }
+
+    @Test void aliasesFromNullListRejected() {
+        assertThrows(NullPointerException.class,
+            () -> CommandSpec.root("x").aliasesFrom(null));
+    }
+
     // FIX 5: CommandContext.args() returns a defensive copy
     @Test void commandContextArgsReturnsCopy() {
         String[] original = {"a", "b"};

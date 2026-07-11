@@ -102,6 +102,17 @@ public final class CommandSpec<S> {
             return this;
         }
         /**
+         * As {@link #aliases(String...)} — convenience for aliases sourced from config as a list.
+         * A distinct name (not an {@code aliases(List<String>)} overload) is deliberate: an
+         * overload would make any existing unqualified {@code .aliases(null)} call ambiguous
+         * between it and {@link #aliases(String...)} (both are applicable to a null argument
+         * without varargs expansion) — a real source-compatibility break for a public API.
+         */
+        public Builder<S> aliasesFrom(List<String> a) {
+            Objects.requireNonNull(a, "aliases");
+            return aliases(a.toArray(new String[0]));
+        }
+        /**
          * Sets the requirement predicate and the callback invoked when it fails.
          *
          * <p><b>Threading:</b> on Velocity the requirement predicate is also evaluated
@@ -127,7 +138,12 @@ public final class CommandSpec<S> {
             child.accept(b);
             if (children.containsKey(b.name))
                 throw new IllegalArgumentException("Duplicate subcommand name '" + b.name + "' under '" + this.name + "'");
-            // Detect alias collisions at build time so they don't silently disappear in the lookup map
+            // Detect alias collisions at build time so they don't silently disappear in the lookup map.
+            // Intentionally NOT checked here: a new alias equal to an existing sibling's canonical
+            // name. That's allowed by design — the canonical name always wins in the lookup map
+            // regardless of registration order (see CommandDispatcherExecuteTest#canonicalNameWinsOverAliasCollision),
+            // so the new alias is simply unreachable rather than ambiguous. Only alias-vs-alias and
+            // name-vs-alias collisions are ambiguous enough to reject.
             for (CommandSpec<S> existing : children.values()) {
                 for (String newAlias : b.aliases) {
                     if (existing.aliases().contains(newAlias))

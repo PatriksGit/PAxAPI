@@ -16,8 +16,12 @@
         <!-- Platform -->
         <velocity.version>3.4.0</velocity.version>
         <paper.version>1.20.6-R0.1-SNAPSHOT</paper.version>
-        <!-- Adventure -->
-        <adventure.version>4.16.0</adventure.version>
+        <!-- Adventure — must be >= what velocity-api (adventure-bom 4.26.1) and paper-api
+             (adventure-bom 4.17.0) themselves compile against; a version older than either
+             makes their compiled classes reference adventure types absent from OUR pinned
+             jar (e.g. net.kyori.adventure.dialog.DialogLike), which only breaks visibly when
+             something needs the full method list of the type (e.g. mocking a Player). -->
+        <adventure.version>4.26.1</adventure.version>
         <!-- Config -->
         <snakeyaml.version>2.2</snakeyaml.version>
         <slf4j.version>2.0.9</slf4j.version>

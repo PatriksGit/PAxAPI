@@ -148,4 +148,75 @@ class CommandDispatcherExecuteTest {
         FakeSender s = FakeSender.player();
         assertThrows(RuntimeException.class, () -> dispatcher(spec).execute(s, "x", new String[0]));
     }
+
+    // a custom SenderAdapter is caller-supplied (e.g. an async permission-plugin lookup) and
+    // must be guarded the same way requirement() already is, not crash execute() uncaught.
+    @Test void throwingHasPermissionRoutesToOnError() {
+        SenderAdapter<FakeSender> throwing = new SenderAdapter<>() {
+            public boolean hasPermission(FakeSender s, String perm) { throw new RuntimeException("perm-check-broken"); }
+            public boolean isPlayer(FakeSender s) { return s.player; }
+        };
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("x")
+            .permission("x.use")
+            .onError((snd, t) -> snd.events.add("err"))
+            .handler(ctx -> ctx.sender().events.add("handler"))
+            .build();
+        FakeSender s = FakeSender.player();
+        assertDoesNotThrow(() -> new CommandDispatcher<>(spec, throwing).execute(s, "x", new String[0]));
+        assertEquals(java.util.List.of("err"), s.events);
+    }
+
+    @Test void throwingHasPermissionWithNoOnErrorIsSwallowed() {
+        SenderAdapter<FakeSender> throwing = new SenderAdapter<>() {
+            public boolean hasPermission(FakeSender s, String perm) { throw new RuntimeException("perm-check-broken"); }
+            public boolean isPlayer(FakeSender s) { return s.player; }
+        };
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("x")
+            .permission("x.use")
+            .handler(ctx -> ctx.sender().events.add("handler"))
+            .build();
+        FakeSender s = FakeSender.player();
+        assertDoesNotThrow(() -> new CommandDispatcher<>(spec, throwing).execute(s, "x", new String[0]));
+        assertTrue(s.events.isEmpty());
+    }
+
+    @Test void throwingIsPlayerRoutesToOnError() {
+        SenderAdapter<FakeSender> throwing = new SenderAdapter<>() {
+            public boolean hasPermission(FakeSender s, String perm) { return true; }
+            public boolean isPlayer(FakeSender s) { throw new RuntimeException("player-check-broken"); }
+        };
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("x")
+            .playerOnly(snd -> {})
+            .onError((snd, t) -> snd.events.add("err"))
+            .handler(ctx -> ctx.sender().events.add("handler"))
+            .build();
+        FakeSender s = FakeSender.player();
+        assertDoesNotThrow(() -> new CommandDispatcher<>(spec, throwing).execute(s, "x", new String[0]));
+        assertEquals(java.util.List.of("err"), s.events);
+    }
+
+    @Test void throwingIsPlayerWithNoOnErrorIsSwallowed() {
+        SenderAdapter<FakeSender> throwing = new SenderAdapter<>() {
+            public boolean hasPermission(FakeSender s, String perm) { return true; }
+            public boolean isPlayer(FakeSender s) { throw new RuntimeException("player-check-broken"); }
+        };
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("x")
+            .playerOnly(snd -> {})
+            .handler(ctx -> ctx.sender().events.add("handler"))
+            .build();
+        FakeSender s = FakeSender.player();
+        assertDoesNotThrow(() -> new CommandDispatcher<>(spec, throwing).execute(s, "x", new String[0]));
+        assertTrue(s.events.isEmpty());
+    }
+
+    // the onError callback is caller-supplied and must not itself be able to crash execute()
+    // uncaught — every other callback invocation in the dispatcher is guarded this way already.
+    @Test void throwingOnErrorHandlerDoesNotPropagate() {
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("x")
+            .onError((snd, t) -> { throw new RuntimeException("onError itself is broken"); })
+            .handler(ctx -> { throw new IllegalStateException("boom"); })
+            .build();
+        FakeSender s = FakeSender.player();
+        assertDoesNotThrow(() -> dispatcher(spec).execute(s, "x", new String[0]));
+    }
 }

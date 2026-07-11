@@ -40,4 +40,24 @@ class DatabaseCustomizerTest {
             assertNotNull(d.dataSource());
         }
     }
+
+    @Test void socketAndConnectTimeoutsAreSetByDefault() {
+        // A stalled DB must not block the caller thread forever — see DatabaseQueryTimeoutTest
+        // for the statement-level timeout; these are the socket-level bound underneath it.
+        try (Database d = new Database(cfg(), LoggerFactory.getLogger("t"))) {
+            Properties p = ((HikariDataSource) d.dataSource()).getDataSourceProperties();
+            assertNotNull(p.getProperty("socketTimeout"), "socketTimeout must have a default");
+            assertNotNull(p.getProperty("connectTimeout"), "connectTimeout must have a default");
+            assertTrue(Integer.parseInt(p.getProperty("socketTimeout")) > 0);
+        }
+    }
+
+    @Test void customizerCanOverrideTheDefaultSocketTimeout() {
+        // Non-critical setting (unlike the security pins) — a caller with different needs can override it.
+        try (Database d = new Database(cfg(), LoggerFactory.getLogger("t"),
+                hc -> hc.addDataSourceProperty("socketTimeout", "5000"))) {
+            Properties p = ((HikariDataSource) d.dataSource()).getDataSourceProperties();
+            assertEquals("5000", p.getProperty("socketTimeout"));
+        }
+    }
 }

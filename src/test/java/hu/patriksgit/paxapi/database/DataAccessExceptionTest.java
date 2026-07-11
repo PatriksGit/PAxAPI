@@ -64,14 +64,31 @@ class DataAccessExceptionTest {
         assertTrue(m.contains("SELECT *"), "SQL still readable");
     }
 
-    @Test void causeMessageControlCharsStripped() {
+    @Test void causeMessageControlCharsStrippedWhenDebugOn() {
         // MySQL echoes user data in error messages (e.g. 1062 "Duplicate entry '<value>'
         // for key '<key>'") — a newline in <value> would forge a log line via the cause.
+        // Only reachable in debug mode now (see causeMessageOmittedWhenDebugOff) since the
+        // driver's own message can contain PII independent of any bound-parameter debug flag.
         SQLException dirty = new SQLException("Duplicate entry 'a\nb' for key 'x'", "23000", 1062);
-        DataAccessException e = DataAccessException.wrap(SQL, null, false, dirty);
+        DataAccessException e = DataAccessException.wrap(SQL, null, true, dirty);
         String m = e.getMessage();
         assertFalse(m.contains("\n"), "cause message must be control-stripped");
         assertTrue(m.contains("Duplicate entry"), "cause text still present");
+    }
+
+    @Test void causeMessageOmittedWhenDebugOff() {
+        // The class's own contract (see class Javadoc) is that PII only appears in debug mode.
+        // A raw MySQL SQLException routinely inlines actual row data into its OWN message
+        // (e.g. an email/IP in a duplicate-key error) independent of debugParams — that text
+        // must not leak into getMessage() by default just because a query failed.
+        SQLException dirty = new SQLException("Duplicate entry 'user@example.com' for key 'idx_email'", "23000", 1062);
+        DataAccessException e = DataAccessException.wrap(SQL, null, false, dirty);
+        String m = e.getMessage();
+        assertFalse(m.contains("user@example.com"), "driver message PII must not leak when debug off");
+        assertFalse(m.contains("Duplicate entry"), "driver message text must not leak when debug off");
+        assertTrue(m.contains("SQLException"), "exception type still present for debuggability");
+        assertTrue(m.contains("23000"), "SQLState still present for debuggability");
+        assertTrue(m.contains("1062"), "error code still present for debuggability");
     }
 
     @Test void unicodeLineSeparatorsStripped() {

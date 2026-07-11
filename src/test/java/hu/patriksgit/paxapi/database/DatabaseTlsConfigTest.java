@@ -78,4 +78,19 @@ class DatabaseTlsConfigTest {
         assertThrows(IllegalArgumentException.class,
             () -> new Database(b().trustStore("http://evil/ca.jks", "p", "JKS").build(), LoggerFactory.getLogger("t")));
     }
+
+    /**
+     * The guard must be an ALLOWLIST of {@code file:}, not a denylist of specific remote schemes —
+     * a denylist of just http(s) lets other URL-Handler-backed remote schemes (jar: over http,
+     * ftp:) still trigger a remote fetch of the truststore, defeating the MITM protection this
+     * check exists for.
+     */
+    @Test void rejectsNonFileSchemesThatCanStillFetchRemotely() {
+        assertThrows(IllegalArgumentException.class,
+            () -> new Database(b().trustStore("jar:http://evil/x.jar!/ca.jks", "p", "JKS").build(), LoggerFactory.getLogger("t")),
+            "jar: wrapping a remote http URL must still be rejected");
+        assertThrows(IllegalArgumentException.class,
+            () -> new Database(b().trustStore("ftp://evil/ca.jks", "p", "JKS").build(), LoggerFactory.getLogger("t")),
+            "ftp: is also a remote fetch and must be rejected");
+    }
 }

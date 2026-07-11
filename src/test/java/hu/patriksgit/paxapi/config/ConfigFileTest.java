@@ -142,6 +142,19 @@ class ConfigFileTest {
         assertEquals(List.of("x"), load(yaml("a: b")).getStringList("missing", List.of("x")));
     }
 
+    // 7 call sites in the consuming plugin repeat `getStringList(key, List.of())` — a
+    // convenience overload defaulting to an empty list removes the repeated argument.
+    @Test
+    void getStringListSingleArgDefaultsToEmptyList() throws IOException {
+        assertEquals(List.of(), load(yaml("a: b")).getStringList("missing"));
+    }
+
+    @Test
+    void getStringListSingleArgReturnsValueWhenPresent() throws IOException {
+        ConfigFile cfg = load(yaml("items:\n  - a\n  - b"));
+        assertEquals(List.of("a", "b"), cfg.getStringList("items"));
+    }
+
     // ── getEnum ──────────────────────────────────────────────────────────────
 
     enum Color { RED, GREEN, BLUE }
@@ -347,6 +360,101 @@ class ConfigFileTest {
         Path f = tempDir.resolve("bad.yml");
         Files.writeString(f, "a:\n  b: [unclosed");
         assertThrows(ConfigException.class, () -> ConfigFile.load(f, LOG));
+    }
+
+    // ── self-referential YAML anchor must not crash the loader ───────────────
+
+    @Test
+    void selfReferentialAliasThrowsConfigExceptionInsteadOfCrashing() throws IOException {
+        // "a: &x\n  loop: *x" is LEGAL YAML — SnakeYAML's composer registers the anchor
+        // before composing its children, so this produces a genuinely self-referential Map
+        // (M.get("loop") == M) via safe two-phase construction. deepImmutable's recursive
+        // walk has no cycle guard, so walking this structure recurses forever. Must surface
+        // as a clean ConfigException, not an uncaught StackOverflowError.
+        Path f = tempDir.resolve("cyclic.yml");
+        Files.writeString(f, "a: &x\n  loop: *x\n");
+        assertThrows(ConfigException.class, () -> ConfigFile.load(f, LOG));
+    }
+
+    @Test
+    void nonCyclicAliasReuseAcrossSiblingsStillWorks() throws IOException {
+        // The SAME anchor referenced by two unrelated sibling keys is ordinary, legitimate
+        // YAML de-duplication (not a cycle) and must load normally, not be flagged as
+        // self-referential.
+        ConfigFile cfg = load(yaml("defaults: &d\n  timeout: 30\nx: *d\ny: *d\n"));
+        assertEquals(30, cfg.getInt("x.timeout", -1));
+        assertEquals(30, cfg.getInt("y.timeout", -1));
+    }
+
+    // ── getLong near-2^63 BigInteger overflow guard ──────────────────────────
+
+    @Test
+    void getLongRejectsBigIntegerNearPositiveOverflowInsteadOfReturningMaxValue() throws IOException {
+        // 2^63 exceeds Long.MAX_VALUE by 1, so SnakeYAML's SafeConstructor parses this as a
+        // BigInteger. The double-based overflow check must not let this silently pass: casting
+        // Long.MAX_VALUE back to double rounds UP to exactly 2^63 (doubles near 2^63 are spaced
+        // 1024 apart, and MAX_VALUE is only 1 below 2^63), making "(double) l == d" spuriously
+        // true and returning Long.MAX_VALUE as if it were the real, validated config value.
+        ConfigFile cfg = load(yaml("n: 9223372036854775808"));
+        assertEquals(-1L, cfg.getLong("n", -1L),
+                "out-of-range BigInteger must return def, not silently clip to MAX_VALUE");
+    }
+
+    @Test
+    void getLongRejectsBigIntegerNearNegativeOverflowInsteadOfReturningMinValue() throws IOException {
+        // Mirror case: one less than Long.MIN_VALUE.
+        ConfigFile cfg = load(yaml("n: -9223372036854775809"));
+        assertEquals(-1L, cfg.getLong("n", -1L),
+                "out-of-range BigInteger must return def, not silently clip to MIN_VALUE");
+    }
+
+    // ── getFloat ──────────────────────────────────────────────────────────────
+    // Two independent code reviews both flagged the same gap: consumers hand-roll float parsing
+    // via getString+Float.parseFloat+manual fallback with no NaN/Infinity guard, unlike every
+    // other typed getter (getInt/getLong/getDouble) which already has one. Mirrors getDouble's
+    // shape, plus a guard for the double->float narrowing itself overflowing to Infinity.
+
+    @Test
+    void getFloatValidNumberValue() throws IOException {
+        assertEquals(1.5f, load(yaml("volume: 1.5")).getFloat("volume", 0f), 0.001f);
+    }
+
+    @Test
+    void getFloatFromStringValue() throws IOException {
+        assertEquals(0.8f, load(yaml("volume: \"0.8\"")).getFloat("volume", 0f), 0.001f);
+    }
+
+    @Test
+    void getFloatMissingKeyReturnsDefault() throws IOException {
+        assertEquals(1.0f, load(yaml("other: 1")).getFloat("volume", 1.0f), 0.001f);
+    }
+
+    @Test
+    void getFloatWrongTypeReturnsDefault() throws IOException {
+        assertEquals(1.0f, load(yaml("volume: [1, 2]")).getFloat("volume", 1.0f), 0.001f);
+    }
+
+    @Test
+    void getFloatNanReturnsDefault() throws IOException {
+        assertEquals(1.0f, load(yaml("volume: .nan")).getFloat("volume", 1.0f), 0.001f);
+    }
+
+    @Test
+    void getFloatInfinityReturnsDefault() throws IOException {
+        assertEquals(1.0f, load(yaml("volume: .inf")).getFloat("volume", 1.0f), 0.001f);
+    }
+
+    @Test
+    void getFloatDoubleValueTooLargeForFloatRangeReturnsDefault() throws IOException {
+        // Finite as a double, but overflows to Infinity once narrowed to float — must not
+        // silently return Infinity as if it were a validated value.
+        ConfigFile cfg = load(yaml("volume: 1.0e300"));
+        assertEquals(1.0f, cfg.getFloat("volume", 1.0f), 0.001f);
+    }
+
+    @Test
+    void getFloatMalformedStringReturnsDefault() throws IOException {
+        assertEquals(1.0f, load(yaml("volume: notanumber")).getFloat("volume", 1.0f), 0.001f);
     }
 
     // ── getDouble NaN/Infinity guard ─────────────────────────────────────────

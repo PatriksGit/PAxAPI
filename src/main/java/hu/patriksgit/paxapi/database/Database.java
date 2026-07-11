@@ -13,6 +13,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -20,6 +26,16 @@ import java.util.regex.Pattern;
  * Hardened MySQL connection pool + easy query helpers. Platform-independent
  * (pure JDBC/HikariCP/slf4j). Construct once at startup, {@link #close()} on
  * shutdown. Helpers run on the CALLER's thread — the library never spawns threads.
+ *
+ * <p>The {@code *Async} variants ({@link #queryAsync}, {@link #queryFirstAsync},
+ * {@link #updateAsync}, {@link #txAsync}, {@link #batchAsync}, {@link #pingAsync}) keep that
+ * same promise: each requires an explicit caller-supplied {@link java.util.concurrent.Executor}
+ * (e.g. the plugin's own async scheduler) rather than the library creating its own thread pool.
+ * They are plain {@code CompletableFuture.supplyAsync} wrappers around the sync helpers, so
+ * failures surface as a wrapped {@code DataAccessException} via the future, not an immediate throw.
+ *
+ * <p>{@link #watchConnection} is a periodic health-check watchdog for a DB that dies mid-run
+ * (not just at startup) — it also requires a caller-supplied {@code ScheduledExecutorService}.
  */
 public final class Database implements AutoCloseable {
 
@@ -36,6 +52,13 @@ public final class Database implements AutoCloseable {
     private static final Pattern SAFE_POOL_NAME = Pattern.compile("[A-Za-z0-9._\\- ]+");
     /** Default batch chunk size — keeps SQL shapes stable and stays under driver limits. */
     private static final int BATCH_CHUNK = 100;
+    // A Minecraft server's main thread must never block on I/O for an unbounded time. Every
+    // helper here documents "runs on the caller's thread" — without a bound, a stalled DB
+    // (network partition, lock wait, overloaded server) freezes whichever thread called in,
+    // which is very often the main thread. socketTimeout/connectTimeout bound the driver's
+    // blocking socket reads; setQueryTimeout (statement-level, seconds) bounds query execution.
+    private static final int DEFAULT_SOCKET_TIMEOUT_MS = 30_000;
+    private static final int DEFAULT_QUERY_TIMEOUT_SECONDS = 30;
 
     // Typed as DataSource (not HikariDataSource) so the test seam can back it with H2.
     // The production constructor assigns a Hikari pool.
@@ -80,8 +103,11 @@ public final class Database implements AutoCloseable {
         }
         if (cfg.trustStoreUrl() != null && !cfg.trustStoreUrl().isBlank()) {
             String tsLower = cfg.trustStoreUrl().trim().toLowerCase(java.util.Locale.ROOT);
-            if (tsLower.startsWith("http:") || tsLower.startsWith("https:")) {
-                throw new IllegalArgumentException("Refusing http(s) trustStoreUrl '" + cfg.trustStoreUrl()
+            // Allowlist file:, not a denylist of remote schemes — a denylist of just http(s)
+            // still lets other URL-Handler-backed remote schemes (jar:http:, ftp:) fetch the
+            // truststore over the network, defeating the MITM protection this guard exists for.
+            if (!tsLower.startsWith("file:")) {
+                throw new IllegalArgumentException("Refusing non-local trustStoreUrl '" + cfg.trustStoreUrl()
                     + "': a remotely fetched truststore enables MITM. Use a local file: URL.");
             }
         }
@@ -148,6 +174,11 @@ public final class Database implements AutoCloseable {
         hc.addDataSourceProperty("cachePrepStmts", "true");
         hc.addDataSourceProperty("prepStmtCacheSize", "250");
         hc.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+        // Bounds a stalled socket read (network partition, dead server) — without this a hung
+        // driver call blocks the caller thread (often the main server thread) indefinitely.
+        // Non-critical: the customizer below may override for a caller with different needs.
+        hc.addDataSourceProperty("connectTimeout", String.valueOf(DEFAULT_SOCKET_TIMEOUT_MS));
+        hc.addDataSourceProperty("socketTimeout", String.valueOf(DEFAULT_SOCKET_TIMEOUT_MS));
 
         // --- escape hatch: any Hikari/driver setting the library does not model ---
         if (customizer != null) customizer.accept(hc);
@@ -211,12 +242,7 @@ public final class Database implements AutoCloseable {
         requireIdent(table, "table");
         requireIdent(column, "column");
         requireColumnExpr(definition, "definition");
-        try (var st = c.createStatement()) {
-            st.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
-        } catch (SQLException e) {
-            if (e.getErrorCode() == 1060) return; // duplicate column — fine
-            throw e;
-        }
+        execDdlSwallowing(c, "ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition, 1060); // duplicate column — fine
     }
 
     /**
@@ -228,12 +254,7 @@ public final class Database implements AutoCloseable {
         requireIdent(table, "table");
         requireIdent(column, "column");
         requireColumnExpr(typeDefinition, "type");
-        try (var st = c.createStatement()) {
-            st.execute("ALTER TABLE " + table + " MODIFY COLUMN " + column + " " + typeDefinition);
-        } catch (SQLException e) {
-            if (e.getErrorCode() == 1146) return; // table doesn't exist — defensive no-op
-            throw e;
-        }
+        execDdlSwallowing(c, "ALTER TABLE " + table + " MODIFY COLUMN " + column + " " + typeDefinition, 1146); // table doesn't exist — defensive no-op
     }
 
     /**
@@ -245,10 +266,16 @@ public final class Database implements AutoCloseable {
         requireIdent(table, "table");
         requireIdent(indexName, "index");
         requireColumnExpr(columns, "columns");
+        execDdlSwallowing(c, "CREATE INDEX " + indexName + " ON " + table + " " + columns, 1061); // already exists — fine
+    }
+
+    /** Shared execute+timeout+swallow-one-error-code plumbing behind ensureColumn/ensureColumnType/ensureIndex. */
+    private void execDdlSwallowing(Connection c, String sql, int swallowErrorCode) throws SQLException {
         try (var st = c.createStatement()) {
-            st.execute("CREATE INDEX " + indexName + " ON " + table + " " + columns);
+            st.setQueryTimeout(DEFAULT_QUERY_TIMEOUT_SECONDS);
+            st.execute(sql);
         } catch (SQLException e) {
-            if (e.getErrorCode() == 1061) return; // already exists — fine
+            if (e.getErrorCode() == swallowErrorCode) return;
             throw e;
         }
     }
@@ -270,17 +297,13 @@ public final class Database implements AutoCloseable {
         Objects.requireNonNull(binder, "binder");
         Objects.requireNonNull(mapper, "mapper");
         checkNotInTx();
-        List<Object> captured = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
-            bindAndCapture(ps, binder, captured);
+        return runPrepared(sql, binder, ps -> {
             try (ResultSet rs = ps.executeQuery()) {
                 List<T> out = new ArrayList<>();
                 while (rs.next()) out.add(mapper.map(rs));
                 return out;
             }
-        } catch (SQLException e) {
-            throw DataAccessException.wrap(sql, captured, debugParams, e);
-        }
+        });
     }
 
     /** Run a SELECT, returning the first row if any. */
@@ -289,15 +312,11 @@ public final class Database implements AutoCloseable {
         Objects.requireNonNull(binder, "binder");
         Objects.requireNonNull(mapper, "mapper");
         checkNotInTx();
-        List<Object> captured = new ArrayList<>();
-        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
-            bindAndCapture(ps, binder, captured);
+        return runPrepared(sql, binder, ps -> {
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? Optional.ofNullable(mapper.map(rs)) : Optional.empty();
             }
-        } catch (SQLException e) {
-            throw DataAccessException.wrap(sql, captured, debugParams, e);
-        }
+        });
     }
 
     /** Run an INSERT/UPDATE/DELETE; returns affected rows. */
@@ -305,10 +324,25 @@ public final class Database implements AutoCloseable {
         Objects.requireNonNull(sql, "sql");
         Objects.requireNonNull(binder, "binder");
         checkNotInTx();
+        return runPrepared(sql, binder, PreparedStatement::executeUpdate);
+    }
+
+    /** One-argument functional shape for {@link #runPrepared}: act on an already-bound, already-timeout-set PreparedStatement. */
+    @FunctionalInterface
+    private interface PreparedAction<T> {
+        T run(PreparedStatement ps) throws SQLException;
+    }
+
+    /**
+     * Shared connection/prepare/timeout/bind/exception-wrap plumbing behind {@code query}/
+     * {@code queryFirst}/{@code update} — only the statement-execution shape differs between them.
+     */
+    private <T> T runPrepared(String sql, Sql.Binder binder, PreparedAction<T> action) {
         List<Object> captured = new ArrayList<>();
         try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setQueryTimeout(DEFAULT_QUERY_TIMEOUT_SECONDS);
             bindAndCapture(ps, binder, captured);
-            return ps.executeUpdate();
+            return action.run(ps);
         } catch (SQLException e) {
             throw DataAccessException.wrap(sql, captured, debugParams, e);
         }
@@ -318,6 +352,130 @@ public final class Database implements AutoCloseable {
     public <T> List<T> query(String sql, Sql.RowMapper<T> mapper) { return query(sql, Sql.Binder.NONE, mapper); }
     public <T> Optional<T> queryFirst(String sql, Sql.RowMapper<T> mapper) { return queryFirst(sql, Sql.Binder.NONE, mapper); }
     public int update(String sql) { return update(sql, Sql.Binder.NONE); }
+
+    // ---- Async query helpers ----
+    //
+    // The class-level contract is "the library never spawns threads": every method below
+    // requires the CALLER to supply an Executor (e.g. the plugin's own async scheduler) and
+    // simply hands the existing synchronous helper to it via CompletableFuture.supplyAsync.
+    // Failures surface the normal CompletableFuture way — wrapped in a CompletionException /
+    // ExecutionException with the DataAccessException as the cause — not as an immediate throw.
+    //
+    // checkNotInTx() is called here SYNCHRONOUSLY, on the caller's own thread, before handing
+    // off to the executor. inTx is a per-instance ThreadLocal set only on the thread that called
+    // tx()/batch() — if the check instead ran inside the supplyAsync lambda (on the executor's
+    // thread), it would never see that flag and the guard would be silently bypassed: calling
+    // e.g. updateAsync(...) from inside a tx() body would open a SECOND pooled connection that
+    // doesn't join the transaction (silent non-atomicity), or at small pool sizes, deadlock
+    // waiting for a connection the enclosing tx is still holding.
+
+    public <T> CompletableFuture<List<T>> queryAsync(String sql, Sql.Binder binder, Sql.RowMapper<T> mapper, Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        checkNotInTx();
+        return CompletableFuture.supplyAsync(() -> query(sql, binder, mapper), executor);
+    }
+
+    public <T> CompletableFuture<List<T>> queryAsync(String sql, Sql.RowMapper<T> mapper, Executor executor) {
+        return queryAsync(sql, Sql.Binder.NONE, mapper, executor);
+    }
+
+    public <T> CompletableFuture<Optional<T>> queryFirstAsync(String sql, Sql.Binder binder, Sql.RowMapper<T> mapper, Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        checkNotInTx();
+        return CompletableFuture.supplyAsync(() -> queryFirst(sql, binder, mapper), executor);
+    }
+
+    public <T> CompletableFuture<Optional<T>> queryFirstAsync(String sql, Sql.RowMapper<T> mapper, Executor executor) {
+        return queryFirstAsync(sql, Sql.Binder.NONE, mapper, executor);
+    }
+
+    public CompletableFuture<Integer> updateAsync(String sql, Sql.Binder binder, Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        checkNotInTx();
+        return CompletableFuture.supplyAsync(() -> update(sql, binder), executor);
+    }
+
+    public CompletableFuture<Integer> updateAsync(String sql, Executor executor) {
+        return updateAsync(sql, Sql.Binder.NONE, executor);
+    }
+
+    /** Async {@link #tx(Sql.TxBody)}. The body still runs synchronously once the executor picks it up. */
+    public <T> CompletableFuture<T> txAsync(Sql.TxBody<T> body, Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        checkNotInTx();
+        return CompletableFuture.supplyAsync(() -> tx(body), executor);
+    }
+
+    /** Async {@link #batch(String, Iterable, Sql.BiBinder)}. */
+    public <T> CompletableFuture<int[]> batchAsync(String sql, Iterable<T> items, Sql.BiBinder<T> binder, Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        checkNotInTx();
+        return CompletableFuture.supplyAsync(() -> batch(sql, items, binder), executor);
+    }
+
+    // ---- Health check ----
+
+    /**
+     * True if a pooled connection can be obtained and validated within {@code timeoutSeconds}.
+     * Never throws SQLException-rooted failures (returns false instead) — but, like every other
+     * helper that opens its own pooled connection, still rejects being called from inside a
+     * tx()/batch() body (see {@link #checkNotInTx()}).
+     */
+    public boolean ping(int timeoutSeconds) {
+        checkNotInTx();
+        try (Connection c = ds.getConnection()) {
+            return c.isValid(timeoutSeconds);
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    public boolean ping() { return ping(5); }
+
+    public CompletableFuture<Boolean> pingAsync(int timeoutSeconds, Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        checkNotInTx();
+        return CompletableFuture.supplyAsync(() -> ping(timeoutSeconds), executor);
+    }
+
+    public CompletableFuture<Boolean> pingAsync(Executor executor) {
+        return pingAsync(5, executor);
+    }
+
+    /**
+     * Pings on a fixed schedule and invokes {@code onStatusChange} only when connectivity
+     * actually TRANSITIONS between up and down — not on every tick. HikariCP already retries
+     * opening a new connection whenever one is requested, but gives no proactive signal that a
+     * DB which died mid-run has come back; this fills that gap so a plugin can react to recovery
+     * (e.g. re-enable a feature it disabled when the DB went down) instead of polling itself.
+     *
+     * <p>The initial state is assumed "up", so if the DB is already down at the first tick this
+     * still correctly fires a "down" event. The scheduler is caller-supplied — per this class's
+     * "never spawns threads" contract, nothing here creates a thread of its own.
+     *
+     * <p>{@code onStatusChange} is guarded: a periodic task silently stops ALL future executions
+     * if it throws uncaught once, so a buggy callback must not be able to permanently disable
+     * recovery monitoring for the plugin's whole lifetime.
+     *
+     * @return a handle whose {@code cancel(false)} stops the watchdog
+     */
+    public ScheduledFuture<?> watchConnection(ScheduledExecutorService scheduler, long interval, TimeUnit unit,
+                                               Consumer<Boolean> onStatusChange) {
+        Objects.requireNonNull(scheduler, "scheduler");
+        Objects.requireNonNull(onStatusChange, "onStatusChange");
+        AtomicBoolean lastUp = new AtomicBoolean(true);
+        return scheduler.scheduleAtFixedRate(() -> {
+            boolean up = ping();
+            if (lastUp.getAndSet(up) != up) {
+                try { onStatusChange.accept(up); } catch (Throwable ignored) { }
+            }
+        }, interval, interval, unit);
+    }
+
+    /** As {@link #watchConnection(ScheduledExecutorService, long, TimeUnit, Consumer)}, checking every 30 seconds. */
+    public ScheduledFuture<?> watchConnection(ScheduledExecutorService scheduler, Consumer<Boolean> onStatusChange) {
+        return watchConnection(scheduler, 30, TimeUnit.SECONDS, onStatusChange);
+    }
 
     /**
      * Bind params through a capturing proxy so a failure can report the actual
@@ -367,7 +525,6 @@ public final class Database implements AutoCloseable {
             c.commit();
             int total = 0;
             for (int[] r : chunkResults) total += r.length;
-            if (total == 0) return new int[0];
             int[] result = new int[total];
             int written = 0;
             for (int[] r : chunkResults) { System.arraycopy(r, 0, result, written, r.length); written += r.length; }
@@ -433,6 +590,7 @@ public final class Database implements AutoCloseable {
 
     private <T> int[] executeBatchChunk(Connection c, String sql, List<T> chunk, Sql.BiBinder<T> binder) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setQueryTimeout(DEFAULT_QUERY_TIMEOUT_SECONDS);
             for (T item : chunk) { binder.bind(ps, item); ps.addBatch(); }
             return ps.executeBatch();
         }

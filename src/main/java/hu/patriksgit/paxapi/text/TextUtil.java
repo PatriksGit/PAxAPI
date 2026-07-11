@@ -153,41 +153,68 @@ public final class TextUtil {
      */
     public static Component parse(String text, Map<String, String> placeholders) {
         if (text == null) return Component.empty();
+        return resolvePlaceholders(convertLegacy(text), text, placeholders, null);
+    }
 
-        String converted = convertLegacy(text);
+    /**
+     * Mint {@link #parse(String, Map)}, de két placeholder-forrást fogad egyszerre:
+     * {@code stringPlaceholders} (injection-safe, unparsed — megbízhatatlan értékekhez, pl.
+     * player input) és {@code componentPlaceholders} (előre feldolgozott {@link Component} —
+     * megbízható, pl. config-ból származó, saját színkódokat tartalmazó szöveg, ami {@link #parse}
+     * segítségével már Component-té alakult). Azonos kulcs esetén a {@code stringPlaceholders}
+     * nyer — egy hívó által explicit átadott érték mindig felülírja az automatikusan
+     * beillesztett alapértéket.
+     *
+     * <p>Ezt használja {@link MessagesFile} a többszörös (per-szekció) prefixek automatikus
+     * behelyettesítéséhez: a config-ban definiált prefixek Component-ként (színesen), a hívó
+     * saját placeholderei String-ként (injection-safe) kerülnek be — egyetlen hívásban.
+     */
+    public static Component parse(String text, Map<String, String> stringPlaceholders,
+                                   Map<String, Component> componentPlaceholders) {
+        if (text == null) return Component.empty();
+        return resolvePlaceholders(convertLegacy(text), text, stringPlaceholders, componentPlaceholders);
+    }
 
-        TagResolver resolver = TagResolver.empty();
-        if (placeholders != null && !placeholders.isEmpty()) {
-            List<TagResolver> resolvers = new ArrayList<>(placeholders.size());
-            Set<String> seen = new HashSet<>();
-            StringBuilder sb = new StringBuilder(converted.length());
-            Matcher m = PLACEHOLDER.matcher(converted);
-            while (m.find()) {
-                String key = m.group(1);
-                String value = placeholders.get(key);
-                if (value != null) {
-                    String lowerKey = key.toLowerCase(Locale.ROOT);
-                    if (RESERVED_TAGS.contains(lowerKey)) {
-                        // Reserved MiniMessage tag name — skip to preserve built-in behaviour
-                        m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
-                    } else {
-                        if (seen.add(lowerKey)) {
-                            resolvers.add(Placeholder.unparsed(lowerKey, value));
-                        }
-                        m.appendReplacement(sb, Matcher.quoteReplacement("<" + lowerKey + ">"));
-                    }
-                } else {
+    /**
+     * Shared %key% scan-and-replace core for {@link #parse(String, Map, Map)} and
+     * {@link #formatChat(String, Map)}. On a key match, {@code stringPlaceholders} wins over
+     * {@code componentPlaceholders} — see {@link #parse(String, Map, Map)}.
+     */
+    private static Component resolvePlaceholders(String converted, String original,
+                                                  Map<String, String> stringPlaceholders,
+                                                  Map<String, Component> componentPlaceholders) {
+        boolean hasStrings = stringPlaceholders != null && !stringPlaceholders.isEmpty();
+        boolean hasComponents = componentPlaceholders != null && !componentPlaceholders.isEmpty();
+        if (!hasStrings && !hasComponents) {
+            return safeDeserialize(converted, TagResolver.empty(), original);
+        }
+        List<TagResolver> resolvers = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        StringBuilder sb = new StringBuilder(converted.length());
+        Matcher m = PLACEHOLDER.matcher(converted);
+        while (m.find()) {
+            String key = m.group(1);
+            String stringValue = hasStrings ? stringPlaceholders.get(key) : null;
+            Component componentValue = stringValue == null && hasComponents ? componentPlaceholders.get(key) : null;
+            if (stringValue != null || componentValue != null) {
+                String lowerKey = key.toLowerCase(Locale.ROOT);
+                if (RESERVED_TAGS.contains(lowerKey)) {
                     m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+                } else {
+                    if (seen.add(lowerKey)) {
+                        resolvers.add(stringValue != null
+                                ? Placeholder.unparsed(lowerKey, stringValue)
+                                : Placeholder.component(lowerKey, componentValue));
+                    }
+                    m.appendReplacement(sb, Matcher.quoteReplacement("<" + lowerKey + ">"));
                 }
-            }
-            m.appendTail(sb);
-            converted = sb.toString();
-            if (!resolvers.isEmpty()) {
-                resolver = TagResolver.resolver(resolvers);
+            } else {
+                m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
             }
         }
-
-        return safeDeserialize(converted, resolver, text);
+        m.appendTail(sb);
+        String result = sb.toString();
+        return safeDeserialize(result, resolvers.isEmpty() ? TagResolver.empty() : TagResolver.resolver(resolvers), original);
     }
 
     /**
@@ -269,34 +296,7 @@ public final class TextUtil {
      */
     public static Component formatChat(String format, Map<String, Component> components) {
         if (format == null) return Component.empty();
-        String converted = convertLegacy(format);
-        if (components == null || components.isEmpty()) return safeDeserialize(converted, TagResolver.empty(), format);
-        List<TagResolver> resolvers = new ArrayList<>(components.size());
-        Set<String> seen = new HashSet<>();
-        StringBuilder sb = new StringBuilder(converted.length());
-        Matcher m = PLACEHOLDER.matcher(converted);
-        while (m.find()) {
-            String key = m.group(1);
-            Component comp = components.get(key);
-            if (comp != null) {
-                String lowerKey = key.toLowerCase(Locale.ROOT);
-                if (RESERVED_TAGS.contains(lowerKey)) {
-                    m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
-                } else {
-                    if (seen.add(lowerKey)) {
-                        resolvers.add(Placeholder.component(lowerKey, comp));
-                    }
-                    m.appendReplacement(sb, Matcher.quoteReplacement("<" + lowerKey + ">"));
-                }
-            } else {
-                m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
-            }
-        }
-        m.appendTail(sb);
-        String result = sb.toString();
-        return safeDeserialize(result,
-                resolvers.isEmpty() ? TagResolver.empty() : TagResolver.resolver(resolvers),
-                format);
+        return resolvePlaceholders(convertLegacy(format), format, null, components);
     }
 
     // ── send() — visszafelé kompatibilis overloadok ──────────────────────────
@@ -326,13 +326,19 @@ public final class TextUtil {
 
     /** Minden sor külön chat-üzenetként küldve, placeholderekkel. */
     public static void sendChat(Audience target, String text, Map<String, String> placeholders) {
+        sendChat(target, text, placeholders, null);
+    }
+
+    /** Mint {@link #sendChat(Audience, String, Map)}, Component-placeholderekkel is — lásd {@link #parse(String, Map, Map)}. */
+    public static void sendChat(Audience target, String text, Map<String, String> placeholders,
+                                 Map<String, Component> componentPlaceholders) {
         Objects.requireNonNull(target, "target");
         if (text != null && text.contains("\n")) {
             for (String line : text.split("\n", -1)) {
-                target.sendMessage(parse(applyExpander(line, target), placeholders));
+                target.sendMessage(parse(applyExpander(line, target), placeholders, componentPlaceholders));
             }
         } else {
-            target.sendMessage(parse(applyExpander(text, target), placeholders));
+            target.sendMessage(parse(applyExpander(text, target), placeholders, componentPlaceholders));
         }
     }
 
@@ -343,10 +349,16 @@ public final class TextUtil {
 
     /** Minden sor külön chat-üzenetként küldve, placeholderekkel. */
     public static void sendChat(Audience target, List<String> lines, Map<String, String> placeholders) {
+        sendChat(target, lines, placeholders, null);
+    }
+
+    /** Mint {@link #sendChat(Audience, List, Map)}, Component-placeholderekkel is — lásd {@link #parse(String, Map, Map)}. */
+    public static void sendChat(Audience target, List<String> lines, Map<String, String> placeholders,
+                                 Map<String, Component> componentPlaceholders) {
         Objects.requireNonNull(target, "target");
         if (lines == null) return;
         for (String line : lines) {
-            target.sendMessage(parse(applyExpander(line, target), placeholders));
+            target.sendMessage(parse(applyExpander(line, target), placeholders, componentPlaceholders));
         }
     }
 
@@ -362,10 +374,16 @@ public final class TextUtil {
 
     /** Több sort egyetlen {@link Component}-té fűz placeholderekkel. */
     public static Component joinLines(List<String> lines, Map<String, String> placeholders) {
+        return joinLines(lines, placeholders, null);
+    }
+
+    /** Mint {@link #joinLines(List, Map)}, Component-placeholderekkel is — lásd {@link #parse(String, Map, Map)}. */
+    public static Component joinLines(List<String> lines, Map<String, String> placeholders,
+                                        Map<String, Component> componentPlaceholders) {
         if (lines == null || lines.isEmpty()) return Component.empty();
-        Component result = parse(lines.get(0), placeholders);
+        Component result = parse(lines.get(0), placeholders, componentPlaceholders);
         for (int i = 1; i < lines.size(); i++) {
-            result = result.append(Component.newline()).append(parse(lines.get(i), placeholders));
+            result = result.append(Component.newline()).append(parse(lines.get(i), placeholders, componentPlaceholders));
         }
         return result;
     }
@@ -379,10 +397,16 @@ public final class TextUtil {
 
     /** Sorok action bar-ként küldve, placeholderekkel. */
     public static void sendActionBar(Audience target, List<String> lines, Map<String, String> placeholders) {
+        sendActionBar(target, lines, placeholders, null);
+    }
+
+    /** Mint {@link #sendActionBar(Audience, List, Map)}, Component-placeholderekkel is — lásd {@link #parse(String, Map, Map)}. */
+    public static void sendActionBar(Audience target, List<String> lines, Map<String, String> placeholders,
+                                       Map<String, Component> componentPlaceholders) {
         Objects.requireNonNull(target, "target");
         if (lines == null || lines.isEmpty()) return;
         List<String> expanded = applyExpanderToAll(lines, target);
-        target.sendActionBar(joinLines(expanded, placeholders));
+        target.sendActionBar(joinLines(expanded, placeholders, componentPlaceholders));
     }
 
     // ── sendTitle() ──────────────────────────────────────────────────────────
@@ -401,11 +425,17 @@ public final class TextUtil {
 
     /** Title + subtitle placeholderekkel — lásd {@link #sendTitle(Audience, List)}. */
     public static void sendTitle(Audience target, List<String> lines, Map<String, String> placeholders) {
+        sendTitle(target, lines, placeholders, null);
+    }
+
+    /** Mint {@link #sendTitle(Audience, List, Map)}, Component-placeholderekkel is — lásd {@link #parse(String, Map, Map)}. */
+    public static void sendTitle(Audience target, List<String> lines, Map<String, String> placeholders,
+                                   Map<String, Component> componentPlaceholders) {
         Objects.requireNonNull(target, "target");
         if (lines == null || lines.isEmpty()) return;
-        Component title    = parse(applyExpander(lines.get(0), target), placeholders);
+        Component title    = parse(applyExpander(lines.get(0), target), placeholders, componentPlaceholders);
         Component subtitle = lines.size() > 1
-                ? parse(applyExpander(lines.get(1), target), placeholders)
+                ? parse(applyExpander(lines.get(1), target), placeholders, componentPlaceholders)
                 : Component.empty();
         Title.Times times  = lines.size() > 2 ? parseTimes(lines.get(2)) : null;
         target.showTitle(Title.title(title, subtitle, times));
@@ -437,7 +467,7 @@ public final class TextUtil {
         ExpanderConfig cfg = expanderConfig;
         PlaceholderExpander e = cfg.expander();
         if (e == null || line == null) return line;
-        String expanded = e.expand(line, context);
+        String expanded = expandSafely(e, line, context);
         if (expanded == null) return line;
         return cfg.trusted() ? expanded : MINI.escapeTags(expanded);
     }
@@ -451,12 +481,31 @@ public final class TextUtil {
             if (line == null) {
                 result.add(null);
             } else {
-                String expanded = e.expand(line, context);
+                String expanded = expandSafely(e, line, context);
                 if (expanded == null) expanded = line;
                 result.add(cfg.trusted() ? expanded : MINI.escapeTags(expanded));
             }
         }
         return result;
+    }
+
+    /**
+     * This library instance is shared across every plugin that registers with it, so a
+     * throwing third-party PAPI/MiniPlaceholders bridge must not be able to break chat/action
+     * bar/title/tablist for every other plugin. Falls back to the original, unexpanded line —
+     * mirrors {@link #safeDeserialize}'s catch/log/fallback pattern.
+     */
+    private static String expandSafely(PlaceholderExpander e, String line, Object context) {
+        try {
+            return e.expand(line, context);
+        } catch (Exception ex) {
+            org.slf4j.Logger log = debugLogger;
+            if (log != null) {
+                log.warn("PlaceholderExpander threw, falling back to unexpanded line. Input: '{}' Cause: {}",
+                        truncate(line), ex.getClass().getName() + ": " + truncate(ex.getMessage()));
+            }
+            return line;
+        }
     }
 
     /**

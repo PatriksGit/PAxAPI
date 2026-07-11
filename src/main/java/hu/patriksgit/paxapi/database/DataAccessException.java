@@ -16,11 +16,12 @@ import java.util.StringJoiner;
  * length-capped — this prevents log-injection via attacker-controlled parameters
  * and avoids dumping huge blobs.
  *
- * <p><b>Logging note:</b> {@link #getMessage()} is sanitized, but the attached
- * {@link #getCause()} object is NOT — a MySQL {@code SQLException} can inline row
- * values in its own message (e.g. {@code Duplicate entry 'a@b.com' for key ...}).
- * To keep logs PII-safe, log {@code ex.getMessage()} rather than the throwable, or
- * scrub the cause chain before logging full stack traces.
+ * <p><b>Logging note:</b> {@link #getMessage()} is sanitized — the driver's own message
+ * (which a MySQL {@code SQLException} can inline row values into, e.g.
+ * {@code Duplicate entry 'a@b.com' for key ...}) is only included when {@code debugParams}
+ * is on, same as bound parameter values. The attached {@link #getCause()} object itself is
+ * NOT sanitized, so logging the raw throwable or its full stack trace bypasses this — to
+ * keep logs PII-safe, log {@code ex.getMessage()} rather than the throwable.
  */
 public final class DataAccessException extends RuntimeException {
 
@@ -44,9 +45,16 @@ public final class DataAccessException extends RuntimeException {
             sb.append(j);
         }
         if (cause != null) {
-            sb.append(" (").append(cause.getClass().getSimpleName())
-              .append(": ").append(stripControl(cause.getMessage()))
-              .append(", SQLState=").append(cause.getSQLState())
+            sb.append(" (").append(cause.getClass().getSimpleName());
+            // The driver's own message can inline actual row data (e.g. MySQL 1062 "Duplicate
+            // entry 'user@example.com' for key ...") independent of whether any bound PARAMETER
+            // is being debug-printed — so it must be gated behind the same debugParams flag,
+            // not included unconditionally. Without this, "log ex.getMessage()" (the PII-safe
+            // practice this class's own Javadoc recommends) would still leak PII when debug is off.
+            if (debugParams) {
+                sb.append(": ").append(stripControl(cause.getMessage()));
+            }
+            sb.append(", SQLState=").append(cause.getSQLState())
               .append(", code=").append(cause.getErrorCode()).append(')');
         }
         return new DataAccessException(sb.toString(), cause);

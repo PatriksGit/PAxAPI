@@ -111,4 +111,39 @@ class CommandDispatcherCompleteTest {
         List<String> childSuggestions = dispatcher(spec).complete(s, new String[]{"maint", ""});
         assertEquals(List.of("on", "off"), childSuggestions);
     }
+
+    // canAccess() guards permission, requirement(), and isPlayer() with try/catch->false.
+    // During sibling enumeration (the loop above building the suggestion list), a throwing
+    // check for just ONE sibling must only hide that one sibling — not propagate out of the
+    // loop and, via the outer catch(Throwable) in complete(), blank the ENTIRE suggestion list.
+    @Test void throwingHasPermissionForOneSiblingOnlyHidesThatSiblingNotTheWholeList() {
+        SenderAdapter<FakeSender> flaky = new SenderAdapter<>() {
+            public boolean hasPermission(FakeSender s, String perm) {
+                if ("x.bad".equals(perm)) throw new RuntimeException("permission backend broken");
+                return s.permissions.contains(perm);
+            }
+            public boolean isPlayer(FakeSender s) { return s.player; }
+        };
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("cmd")
+            .sub("reload", ctx -> {})
+            .group("broken", b -> b.permission("x.bad").handler(ctx -> {}))
+            .build();
+        FakeSender s = FakeSender.player();
+        List<String> suggestions = new CommandDispatcher<>(spec, flaky).complete(s, new String[]{""});
+        assertEquals(List.of("reload"), suggestions);
+    }
+
+    @Test void throwingIsPlayerForOneSiblingOnlyHidesThatSiblingNotTheWholeList() {
+        SenderAdapter<FakeSender> flaky = new SenderAdapter<>() {
+            public boolean hasPermission(FakeSender s, String perm) { return true; }
+            public boolean isPlayer(FakeSender s) { throw new RuntimeException("player-check broken"); }
+        };
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("cmd")
+            .sub("reload", ctx -> {})
+            .group("broken", b -> b.playerOnly(snd -> {}).handler(ctx -> {}))
+            .build();
+        FakeSender s = FakeSender.player();
+        List<String> suggestions = new CommandDispatcher<>(spec, flaky).complete(s, new String[]{""});
+        assertEquals(List.of("reload"), suggestions);
+    }
 }

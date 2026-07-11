@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.function.BiConsumer;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /** Routes execution and tab-completion through a {@link CommandSpec} tree. */
@@ -40,30 +41,10 @@ public final class CommandDispatcher<S> {
             if (node.onUnknown() != null) effUnknown = node.onUnknown();
             if (node.onError() != null) effError = node.onError();
 
-            if (node.permission() != null && !adapter.hasPermission(sender, node.permission())) {
-                final Consumer<S> fd = effDenied;
-                if (fd != null) guard(() -> fd.accept(sender), effError, sender);
-                return;
-            }
-            if (node.requirement() != null) {
-                boolean reqMet;
-                try {
-                    reqMet = node.requirement().test(sender);
-                } catch (Throwable t) {
-                    guardThrowable(effError, sender, t);
-                    return;
-                }
-                if (!reqMet) {
-                    final CommandSpec<S> n = node;
-                    guard(() -> n.onRequirementFail().accept(sender), effError, sender);
-                    return;
-                }
-            }
-            if (node.playerOnly() && !adapter.isPlayer(sender)) {
-                final CommandSpec<S> n = node;
-                guard(() -> n.onPlayerOnlyFail().accept(sender), effError, sender);
-                return;
-            }
+            final CommandSpec<S> n = node;
+            if (n.permission() != null && !gate(() -> adapter.hasPermission(sender, n.permission()), effDenied, sender, effError)) return;
+            if (n.requirement() != null && !gate(() -> n.requirement().test(sender), n.onRequirementFail(), sender, effError)) return;
+            if (n.playerOnly() && !gate(() -> adapter.isPlayer(sender), n.onPlayerOnlyFail(), sender, effError)) return;
 
             if (i < args.length) {
                 String token = args[i].toLowerCase(Locale.ROOT);
@@ -90,6 +71,28 @@ public final class CommandDispatcher<S> {
         }
     }
 
+    /**
+     * Shared shape behind the permission/requirement/playerOnly gates in {@link #execute}: run
+     * {@code check}; if it throws, route to onError (else swallow) and report "blocked". If it
+     * returns {@code false}, invoke {@code onFail} (guarded the same way) and report "blocked".
+     * Do NOT reuse this for handler execution — {@link #runHandler} is intentionally asymmetric
+     * (a handler exception with no onError PROPAGATES rather than being swallowed here).
+     */
+    private boolean gate(BooleanSupplier check, Consumer<S> onFail, S sender, BiConsumer<S, Throwable> effError) {
+        boolean ok;
+        try {
+            ok = check.getAsBoolean();
+        } catch (Throwable t) {
+            guardThrowable(effError, sender, t);
+            return false;
+        }
+        if (!ok) {
+            if (onFail != null) guard(() -> onFail.accept(sender), effError, sender);
+            return false;
+        }
+        return true;
+    }
+
     /** Guards an infrastructure call: routes any thrown Throwable to onError (if set), else swallows it. */
     private void guard(Runnable action, BiConsumer<S, Throwable> onError, S sender) {
         try {
@@ -109,8 +112,14 @@ public final class CommandDispatcher<S> {
         try {
             node.handler().handle(new CommandContext<>(sender, label, List.copyOf(path), remaining));
         } catch (Throwable t) {
-            if (effError != null) effError.accept(sender, t);
-            else throw new RuntimeException("Command handler '" + String.join(" ", path) + "' failed", t);
+            if (effError != null) {
+                // The configured onError callback is caller-supplied and must not itself be
+                // able to crash execute() uncaught — every other callback invocation in this
+                // class is guarded (see guard()/guardThrowable()); this one was the exception.
+                try { effError.accept(sender, t); } catch (Throwable ignored) {}
+            } else {
+                throw new RuntimeException("Command handler '" + String.join(" ", path) + "' failed", t);
+            }
         }
     }
 
@@ -165,17 +174,20 @@ public final class CommandDispatcher<S> {
         }
     }
 
+    // Guards the WHOLE body, not just requirement() — canAccess() is called once per sibling
+    // during tab-completion's suggestion-list enumeration (see complete() above). Without a
+    // guard around hasPermission/isPlayer too, a throwing check for just ONE sibling propagates
+    // out of that loop and, via complete()'s outer catch(Throwable), blanks the ENTIRE
+    // suggestion list instead of just hiding the one offending node.
     private boolean canAccess(CommandSpec<S> node, S sender) {
-        if (node.permission() != null && !adapter.hasPermission(sender, node.permission())) return false;
-        if (node.requirement() != null) {
-            try {
-                if (!node.requirement().test(sender)) return false;
-            } catch (Throwable t) {
-                return false;
-            }
+        try {
+            if (node.permission() != null && !adapter.hasPermission(sender, node.permission())) return false;
+            if (node.requirement() != null && !node.requirement().test(sender)) return false;
+            if (node.playerOnly() && !adapter.isPlayer(sender)) return false;
+            return true;
+        } catch (Throwable t) {
+            return false;
         }
-        if (node.playerOnly() && !adapter.isPlayer(sender)) return false;
-        return true;
     }
 
     static String[] slice(String[] arr, int from) {

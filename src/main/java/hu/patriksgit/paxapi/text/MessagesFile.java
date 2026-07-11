@@ -40,7 +40,9 @@ public final class MessagesFile {
     private record Snapshot(
             Map<String, String> singles,
             Map<String, List<String>> lists,
-            String yamlPrefix) {}
+            String yamlPrefix,
+            Map<String, String> namedPrefixes,
+            Map<String, Component> namedPrefixComponents) {}
 
     private final Path file;
     private final Logger logger;
@@ -120,7 +122,7 @@ public final class MessagesFile {
             if (root == null) {
                 logger.warn("{} is empty — using empty message map. Delete to regenerate the default.",
                         file.getFileName());
-                return new Snapshot(Map.of(), Map.of(), "");
+                return new Snapshot(Map.of(), Map.of(), "", Map.of(), Map.of());
             }
             if (!(root instanceof Map)) {
                 throw new IOException(file.getFileName() + " root must be a YAML mapping, not "
@@ -130,10 +132,55 @@ public final class MessagesFile {
             Map<String, List<String>> lists = new HashMap<>();
             flatten("", root, singles, lists, logger, file.getFileName().toString());
             String prefix = singles.getOrDefault("prefix", "");
+            Map<String, String> namedPrefixes = new HashMap<>();
+            for (Map.Entry<String, String> e : singles.entrySet()) {
+                if (e.getKey().startsWith("prefix.")) {
+                    namedPrefixes.put(e.getKey().substring("prefix.".length()), e.getValue());
+                }
+            }
+            // Pre-parsed once per reload, not per get()/send() call — named prefixes only
+            // change on reload, so re-running TextUtil.parse per chat message would be wasted work.
+            Map<String, Component> namedPrefixComponents = new HashMap<>(namedPrefixes.size());
+            namedPrefixes.forEach((name, raw) -> namedPrefixComponents.put(name + "-prefix", TextUtil.parse(raw)));
+            if (!namedPrefixes.isEmpty()) {
+                warnUnmatchedPrefixTokens(singles, namedPrefixes, logger, file.getFileName().toString());
+            }
             return new Snapshot(
                     Collections.unmodifiableMap(singles),
                     Collections.unmodifiableMap(lists),
-                    prefix);
+                    prefix,
+                    Collections.unmodifiableMap(namedPrefixes),
+                    Collections.unmodifiableMap(namedPrefixComponents));
+        }
+    }
+
+    // Name class must match TextUtil.PLACEHOLDER's ([A-Za-z0-9_-]+) — a section name may itself
+    // contain hyphens (e.g. "staff-chat"), and this must still recognize %staff-chat-prefix% as
+    // a prefix token, or a typo in a hyphenated name would silently go undetected.
+    private static final java.util.regex.Pattern PREFIX_TOKEN =
+            java.util.regex.Pattern.compile("%([A-Za-z0-9_-]+)-prefix%");
+
+    /**
+     * WARNs (once per unique name, per load/reload) about a {@code %name-prefix%} token that
+     * appears in some message but has no corresponding {@code prefix.name} entry — almost
+     * certainly a typo or a forgotten config entry, since this suffix convention belongs
+     * exclusively to the named-prefix feature. Only called when at least one named prefix is
+     * actually defined, so a messages.yml not using this feature at all is never flagged for a
+     * coincidentally "-prefix"-suffixed placeholder of its own.
+     */
+    private static void warnUnmatchedPrefixTokens(Map<String, String> singles, Map<String, String> namedPrefixes,
+                                                    Logger logger, String fileName) {
+        Set<String> warnedNames = new java.util.HashSet<>();
+        for (String value : singles.values()) {
+            java.util.regex.Matcher m = PREFIX_TOKEN.matcher(value);
+            while (m.find()) {
+                String name = m.group(1);
+                if (!namedPrefixes.containsKey(name) && warnedNames.add(name)) {
+                    logger.warn("{}: found '%{}-prefix%' but no matching 'prefix.{}' entry — "
+                            + "typo, or a forgotten prefix section? The token will stay literal.",
+                            fileName, name, name);
+                }
+            }
         }
     }
 
@@ -183,6 +230,33 @@ public final class MessagesFile {
         return prefix(s);
     }
 
+    /**
+     * Raw named-prefix string for {@code name} (before TextUtil parsing) — the value of
+     * {@code prefix.<name>} when the YAML {@code prefix:} key is authored as a map, e.g.
+     * <pre>{@code
+     * prefix:
+     *   helpop: "&8[HelpOp]&r "
+     *   staffchat: "&8[SC]&r "
+     * }</pre>
+     * Returns {@code ""} if {@code name} has no entry. Unrelated to {@link #rawPrefix()} /
+     * the legacy flat {@code %prefix%} token, which only applies when {@code prefix:} is a
+     * plain string.
+     *
+     * <p>Every named prefix is also auto-substituted (as a colored Component, not a literal
+     * string) wherever its {@code %<name>-prefix%} token appears in any {@link #get}/{@link #send}/
+     * {@link #broadcast}/{@link #formatChat}/{@link #getList} template — callers don't need to
+     * pass it through their own placeholders map.
+     */
+    public String prefix(String name) {
+        Objects.requireNonNull(name, "name");
+        return snapshot.namedPrefixes().getOrDefault(name, "");
+    }
+
+    /** {@code <name>-prefix -> Component} for every named prefix, pre-parsed at snapshot build time. */
+    private static Map<String, Component> namedPrefixComponents(Snapshot s) {
+        return s.namedPrefixComponents();
+    }
+
     // ── get() ─────────────────────────────────────────────────────────────────
 
     /**
@@ -212,15 +286,16 @@ public final class MessagesFile {
             return Component.empty();
         }
         String resolved = value.replace("%prefix%", prefix(s));
+        Map<String, Component> namedPrefixes = namedPrefixComponents(s);
         if (resolved.contains("\n")) {
             String[] lines = resolved.split("\n", -1);
-            Component result = TextUtil.parse(lines[0], placeholders);
+            Component result = TextUtil.parse(lines[0], placeholders, namedPrefixes);
             for (int i = 1; i < lines.length; i++) {
-                result = result.append(Component.newline()).append(TextUtil.parse(lines[i], placeholders));
+                result = result.append(Component.newline()).append(TextUtil.parse(lines[i], placeholders, namedPrefixes));
             }
             return result;
         }
-        return TextUtil.parse(resolved, placeholders);
+        return TextUtil.parse(resolved, placeholders, namedPrefixes);
     }
 
     // ── getList() ─────────────────────────────────────────────────────────────
@@ -237,11 +312,12 @@ public final class MessagesFile {
     public List<Component> getList(String key, Map<String, String> placeholders) {
         Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
+        Map<String, Component> namedPrefixes = namedPrefixComponents(s);
         List<String> rawList = s.lists().get(key);
         if (rawList != null) {
             String p = prefix(s);
             List<Component> out = new ArrayList<>(rawList.size());
-            for (String line : rawList) out.add(TextUtil.parse(line.replace("%prefix%", p), placeholders));
+            for (String line : rawList) out.add(TextUtil.parse(line.replace("%prefix%", p), placeholders, namedPrefixes));
             return Collections.unmodifiableList(out);
         }
         String single = s.singles().get(key);
@@ -250,7 +326,7 @@ public final class MessagesFile {
                 logger.warn("messages.yml key '{}' is a string but used as a list — wrapping. "
                         + "Convert to YAML list (- 'line') to silence this.", key);
             }
-            return List.of(TextUtil.parse(single.replace("%prefix%", prefix(s)), placeholders));
+            return List.of(TextUtil.parse(single.replace("%prefix%", prefix(s)), placeholders, namedPrefixes));
         }
         warnMissing(key);
         return Collections.emptyList();
@@ -268,16 +344,17 @@ public final class MessagesFile {
         Objects.requireNonNull(key, "key");
         Snapshot s = snapshot;
         String p = prefix(s);
+        Map<String, Component> namedPrefixes = namedPrefixComponents(s);
         List<String> rawList = s.lists().get(key);
         if (rawList != null) {
             List<String> resolved = new ArrayList<>(rawList.size());
             for (String line : rawList) resolved.add(line.replace("%prefix%", p));
-            TextUtil.sendChat(target, resolved, placeholders);
+            TextUtil.sendChat(target, resolved, placeholders, namedPrefixes);
             return;
         }
         String raw = s.singles().get(key);
         if (raw == null) { warnMissing(key); return; }
-        TextUtil.sendChat(target, raw.replace("%prefix%", p), placeholders);
+        TextUtil.sendChat(target, raw.replace("%prefix%", p), placeholders, namedPrefixes);
     }
 
     // ── broadcast() ──────────────────────────────────────────────────────────
@@ -314,7 +391,16 @@ public final class MessagesFile {
         String raw = s.singles().get(key);
         if (raw == null) { warnMissing(key); return Component.empty(); }
         String resolved = raw.replace("%prefix%", prefix(s));
-        return TextUtil.formatChat(resolved, components);
+        Map<String, Component> merged = namedPrefixComponents(s);
+        if (components != null && !components.isEmpty()) {
+            if (merged.isEmpty()) {
+                merged = components;
+            } else {
+                merged = new HashMap<>(merged);
+                merged.putAll(components);
+            }
+        }
+        return TextUtil.formatChat(resolved, merged);
     }
 
     // ── sendTitle() ───────────────────────────────────────────────────────────
@@ -328,9 +414,10 @@ public final class MessagesFile {
     }
 
     public void sendTitle(Audience target, String key, Map<String, String> placeholders) {
-        List<String> resolved = resolvedList(key);
+        Snapshot s = snapshot;
+        List<String> resolved = resolvedList(s, key);
         if (resolved.isEmpty()) return;
-        TextUtil.sendTitle(target, resolved, placeholders);
+        TextUtil.sendTitle(target, resolved, placeholders, namedPrefixComponents(s));
     }
 
     // ── sendActionBar() ───────────────────────────────────────────────────────
@@ -340,20 +427,23 @@ public final class MessagesFile {
     }
 
     public void sendActionBar(Audience target, String key, Map<String, String> placeholders) {
-        List<String> resolved = resolvedList(key);
+        Snapshot s = snapshot;
+        List<String> resolved = resolvedList(s, key);
         if (resolved.isEmpty()) return;
-        TextUtil.sendActionBar(target, resolved, placeholders);
+        TextUtil.sendActionBar(target, resolved, placeholders, namedPrefixComponents(s));
     }
 
     // ── internal helpers ──────────────────────────────────────────────────────
 
     /**
      * Raw strings with {@code %prefix%} substituted — used by sendTitle/sendActionBar
-     * which need raw strings so TextUtil can apply its PlaceholderExpander.
+     * which need raw strings so TextUtil can apply its PlaceholderExpander. Takes the
+     * caller's already-read {@code Snapshot} so it's consistent with the caller's own
+     * subsequent use of that snapshot (e.g. for named-prefix Components) even if a
+     * concurrent {@link #reload()} swaps the volatile field in between.
      */
-    private List<String> resolvedList(String key) {
+    private List<String> resolvedList(Snapshot s, String key) {
         Objects.requireNonNull(key, "key");
-        Snapshot s = snapshot;
         String p = prefix(s);
         List<String> rawList = s.lists().get(key);
         if (rawList != null) {
