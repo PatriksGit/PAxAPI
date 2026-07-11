@@ -5,10 +5,13 @@ Date: 2026-07-12
 
 ## Motivation
 
-Two downstream plugins (PAxAuth's `ReloadGate`, PAxStaffUtils's `HelpOpCooldown`) each hand-roll
-the same per-sender cooldown logic on top of `CommandSpec`. This adds a first-class `.cooldown(...)`
-gate to `CommandSpec.Builder` plus a standalone `CooldownTracker` class, so both call sites collapse
-into the shared library.
+Two downstream plugins hand-roll overlapping cooldown logic that this spec's two entry points now
+cover separately: PAxStaffUtils's `HelpOpCooldown` (per-sender) maps onto the sender-keyed
+`.cooldown()` builder gate; PAxAuth's `ReloadGate` (a single global window shared across both the
+`/paxauth reload` command and a non-command plugin-message handler) maps onto the standalone
+`CooldownTracker`, used directly with a constant key from both call sites — it cannot use the
+builder, since that's sender-keyed and `execute()`-only. Neither plugin gates through `CommandSpec`
+today; both call their cooldown helper by hand from inside the handler body.
 
 This spec covers **only** the cooldown gate. Config write-back, Managed Executor, the soft-dependency
 helper, and the PlaceholderAPI auto-hook are separate, independent specs.
@@ -205,4 +208,6 @@ still consumes the cooldown.
 
 - Config write-back, Managed Executor, soft-dependency helper, PAPI auto-hook — separate specs.
 - Migrating `PAxAuth`'s `ReloadGate` or `PAxStaffUtils`'s `HelpOpCooldown` onto this — follow-up work in
-  those repos, not part of this library change.
+  those repos, not part of this library change. When `ReloadGate` migrates, it must use
+  `CooldownTracker` directly with a constant key — not `.cooldown()` — since the builder gate is
+  sender-keyed and would reopen the exact cross-path bypass the shared window exists to prevent.
