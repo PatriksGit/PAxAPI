@@ -1,7 +1,10 @@
 package hu.patriksgit.paxapi.command;
 
 import org.junit.jupiter.api.Test;
+import java.time.Duration;
 import java.util.List;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.*;
 
 class CommandSpecTest {
@@ -131,5 +134,37 @@ class CommandSpecTest {
         // must render the array contents, not an array identity/address like [Ljava.lang.String;@...
         assertTrue(s.contains("[a, b]"), "toString must show args contents; got: " + s);
         assertFalse(s.contains("[Ljava.lang.String"), "toString must not show array address; got: " + s);
+    }
+
+    @Test void cooldownRequiresNonNullTracker() {
+        assertThrows(NullPointerException.class,
+            () -> CommandSpec.root("x").cooldown(null, () -> Duration.ofSeconds(1), (s, r) -> {}));
+    }
+
+    @Test void cooldownRequiresNonNullDuration() {
+        assertThrows(NullPointerException.class,
+            () -> CommandSpec.root("x").cooldown(new CooldownTracker(), null, (s, r) -> {}));
+    }
+
+    @Test void cooldownRequiresNonNullOnCooldown() {
+        assertThrows(NullPointerException.class,
+            () -> CommandSpec.root("x").cooldown(new CooldownTracker(), () -> Duration.ofSeconds(1), null));
+    }
+
+    @Test void cooldownFieldsAccessibleAfterBuild() {
+        CooldownTracker tracker = new CooldownTracker();
+        Supplier<Duration> duration = () -> Duration.ofSeconds(5);
+        BiConsumer<Object, Duration> onCooldown = (s, r) -> {};
+        CommandSpec<Object> spec = CommandSpec.root("x").cooldown(tracker, duration, onCooldown).build();
+        assertSame(tracker, spec.cooldownTracker());
+        assertSame(duration, spec.cooldownDuration());
+        assertSame(onCooldown, spec.onCooldown());
+    }
+
+    @Test void nullCooldownFieldsWhenNotConfigured() {
+        CommandSpec<Object> spec = CommandSpec.root("x").build();
+        assertNull(spec.cooldownTracker());
+        assertNull(spec.cooldownDuration());
+        assertNull(spec.onCooldown());
     }
 }

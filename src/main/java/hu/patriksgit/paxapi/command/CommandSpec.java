@@ -1,5 +1,6 @@
 package hu.patriksgit.paxapi.command;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -8,6 +9,7 @@ import java.util.Objects;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /** Immutable command node. Build via {@link #root(String)}. */
 public final class CommandSpec<S> {
@@ -26,6 +28,9 @@ public final class CommandSpec<S> {
     private final Consumer<S> onDenied;                 // nullable
     private final BiConsumer<S, String> onUnknown;      // nullable
     private final BiConsumer<S, Throwable> onError;     // nullable
+    private final CooldownTracker cooldownTracker;        // nullable
+    private final Supplier<Duration> cooldownDuration;    // non-null iff cooldownTracker != null
+    private final BiConsumer<S, Duration> onCooldown;      // non-null iff cooldownTracker != null
 
     private CommandSpec(Builder<S> b) {
         this.name = b.name;
@@ -52,6 +57,9 @@ public final class CommandSpec<S> {
         this.onDenied = b.onDenied;
         this.onUnknown = b.onUnknown;
         this.onError = b.onError;
+        this.cooldownTracker = b.cooldownTracker;
+        this.cooldownDuration = b.cooldownDuration;
+        this.onCooldown = b.onCooldown;
     }
 
     public static <S> Builder<S> root(String name) { return new Builder<>(name); }
@@ -70,6 +78,9 @@ public final class CommandSpec<S> {
     public Consumer<S> onDenied() { return onDenied; }
     public BiConsumer<S, String> onUnknown() { return onUnknown; }
     public BiConsumer<S, Throwable> onError() { return onError; }
+    public CooldownTracker cooldownTracker() { return cooldownTracker; }
+    public Supplier<Duration> cooldownDuration() { return cooldownDuration; }
+    public BiConsumer<S, Duration> onCooldown() { return onCooldown; }
 
     public static final class Builder<S> {
         private final String name;
@@ -85,6 +96,9 @@ public final class CommandSpec<S> {
         private Consumer<S> onDenied;
         private BiConsumer<S, String> onUnknown;
         private BiConsumer<S, Throwable> onError;
+        private CooldownTracker cooldownTracker;
+        private Supplier<Duration> cooldownDuration;
+        private BiConsumer<S, Duration> onCooldown;
 
         Builder(String name) {
             Objects.requireNonNull(name, "name");
@@ -164,6 +178,24 @@ public final class CommandSpec<S> {
         public Builder<S> onDenied(Consumer<S> c) { this.onDenied = c; return this; }
         public Builder<S> onUnknown(BiConsumer<S, String> c) { this.onUnknown = c; return this; }
         public Builder<S> onError(BiConsumer<S, Throwable> c) { this.onError = c; return this; }
+        /**
+         * Gates this node behind a per-key cooldown. {@code tracker} is caller-owned — construct
+         * and hold one {@link CooldownTracker} per gated command, and call its
+         * {@link CooldownTracker#evictOlderThan} on your own schedule; this library never spawns
+         * threads. {@code duration} is read fresh on every check, so a config-driven cooldown
+         * length can change without rebuilding this spec. {@code onCooldown} is required — it
+         * receives the sender and the remaining wait whenever a check is blocked.
+         *
+         * <p>The cooldown is consumed by {@link CommandDispatcher#execute}, never by
+         * {@link CommandDispatcher#complete} — merely tab-completing this command never counts as
+         * a use. It is checked last, after permission/requirement/playerOnly all pass.
+         */
+        public Builder<S> cooldown(CooldownTracker tracker, Supplier<Duration> duration, BiConsumer<S, Duration> onCooldown) {
+            this.cooldownTracker = Objects.requireNonNull(tracker, "tracker");
+            this.cooldownDuration = Objects.requireNonNull(duration, "duration");
+            this.onCooldown = Objects.requireNonNull(onCooldown, "onCooldown");
+            return this;
+        }
 
         public CommandSpec<S> build() {
             if (permission != null && permission.isBlank()) {
