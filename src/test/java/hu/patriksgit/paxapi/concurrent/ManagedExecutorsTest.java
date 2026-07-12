@@ -2,12 +2,18 @@ package hu.patriksgit.paxapi.concurrent;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -96,5 +102,121 @@ class ManagedExecutorsTest {
         assertThrows(IllegalArgumentException.class, () -> ManagedExecutors.singleThreadScheduled(null));
         assertThrows(IllegalArgumentException.class, () -> ManagedExecutors.singleThreadScheduled(""));
         assertThrows(IllegalArgumentException.class, () -> ManagedExecutors.singleThreadScheduled("   "));
+    }
+
+    @Test void drainsWithinTimeoutWithoutCallingForcedShutdown() throws InterruptedException {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        CountDownLatch taskDone = new CountDownLatch(1);
+        exec.execute(taskDone::countDown);
+        assertTrue(taskDone.await(5, TimeUnit.SECONDS));
+
+        AtomicBoolean forced = new AtomicBoolean(false);
+        ManagedExecutors.shutdownGracefully(exec, Duration.ofSeconds(5), () -> forced.set(true));
+
+        assertTrue(exec.isTerminated());
+        assertFalse(forced.get());
+    }
+
+    @Test void callsForcedShutdownWhenTimeoutElapses() {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        CountDownLatch neverCounted = new CountDownLatch(1);
+        exec.execute(() -> {
+            try { neverCounted.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        AtomicInteger calls = new AtomicInteger();
+        ManagedExecutors.shutdownGracefully(exec, Duration.ofMillis(50), calls::incrementAndGet);
+
+        assertEquals(1, calls.get());
+        assertTrue(exec.isShutdown());
+    }
+
+    @Test void nullOnForcedShutdownIsToleratedOnTimeoutBranch() {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        CountDownLatch neverCounted = new CountDownLatch(1);
+        exec.execute(() -> {
+            try { neverCounted.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        assertDoesNotThrow(() -> ManagedExecutors.shutdownGracefully(exec, Duration.ofMillis(50), null));
+        assertTrue(exec.isShutdown());
+    }
+
+    @Test void throwingOnForcedShutdownIsSwallowed() {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        CountDownLatch neverCounted = new CountDownLatch(1);
+        exec.execute(() -> {
+            try { neverCounted.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        assertDoesNotThrow(() -> ManagedExecutors.shutdownGracefully(exec, Duration.ofMillis(50),
+            () -> { throw new RuntimeException("boom"); }));
+    }
+
+    @Test void interruptedWhileAwaitingCallsForcedShutdownAndRestoresInterruptStatus() throws InterruptedException {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        CountDownLatch neverCounted = new CountDownLatch(1);
+        exec.execute(() -> {
+            try { neverCounted.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        AtomicInteger calls = new AtomicInteger();
+        AtomicBoolean interruptedFlagSeen = new AtomicBoolean(false);
+        CountDownLatch enteredAwait = new CountDownLatch(1);
+
+        Thread worker = new Thread(() -> {
+            enteredAwait.countDown();
+            ManagedExecutors.shutdownGracefully(exec, Duration.ofSeconds(30), calls::incrementAndGet);
+            interruptedFlagSeen.set(Thread.currentThread().isInterrupted());
+        });
+        worker.start();
+        assertTrue(enteredAwait.await(5, TimeUnit.SECONDS));
+        Thread.sleep(200); // let the worker actually reach the blocking awaitTermination call
+        worker.interrupt();
+        worker.join(5000);
+
+        assertEquals(1, calls.get());
+        assertTrue(interruptedFlagSeen.get(), "expected the worker thread's interrupt status to be restored");
+    }
+
+    @Test void nullOnForcedShutdownIsToleratedOnInterruptedBranch() throws InterruptedException {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        CountDownLatch neverCounted = new CountDownLatch(1);
+        exec.execute(() -> {
+            try { neverCounted.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+
+        CountDownLatch enteredAwait = new CountDownLatch(1);
+        AtomicBoolean threw = new AtomicBoolean(false);
+        Thread worker = new Thread(() -> {
+            enteredAwait.countDown();
+            try {
+                ManagedExecutors.shutdownGracefully(exec, Duration.ofSeconds(30), null);
+            } catch (Throwable t) {
+                threw.set(true);
+            }
+        });
+        worker.start();
+        assertTrue(enteredAwait.await(5, TimeUnit.SECONDS));
+        Thread.sleep(200);
+        worker.interrupt();
+        worker.join(5000);
+
+        assertFalse(threw.get());
+    }
+
+    @Test void shutdownGracefullyRejectsNullExecutor() {
+        assertThrows(NullPointerException.class,
+            () -> ManagedExecutors.shutdownGracefully(null, Duration.ofSeconds(1), () -> {}));
+    }
+
+    @Test void shutdownGracefullyRejectsNullTimeout() {
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            assertThrows(NullPointerException.class,
+                () -> ManagedExecutors.shutdownGracefully(exec, null, () -> {}));
+        } finally {
+            exec.shutdownNow();
+        }
     }
 }

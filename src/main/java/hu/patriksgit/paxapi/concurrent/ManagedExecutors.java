@@ -1,9 +1,12 @@
 package hu.patriksgit.paxapi.concurrent;
 
+import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -47,6 +50,38 @@ public final class ManagedExecutors {
     public static ScheduledExecutorService singleThreadScheduled(String name) {
         requireNonBlank(name, "name");
         return Executors.newSingleThreadScheduledExecutor(namedDaemonFactory(name));
+    }
+
+    /**
+     * Drains {@code executor}: {@code shutdown()}, then waits up to {@code timeout} for it to
+     * terminate. If it doesn't drain in time — OR if this thread is interrupted while waiting —
+     * calls {@code shutdownNow()} and (if non-null) invokes {@code onForcedShutdown}. Restores
+     * this thread's interrupt status if the wait was interrupted. Never throws out of this
+     * method itself (beyond the null-check below): a throwing {@code onForcedShutdown} is
+     * swallowed so it cannot block the rest of a caller's shutdown sequence.
+     *
+     * @param onForcedShutdown may be {@code null} — {@code null} means "stay silent on forced
+     *                         shutdown", matching call sites that don't want any callback at all.
+     */
+    public static void shutdownGracefully(ExecutorService executor, Duration timeout, Runnable onForcedShutdown) {
+        Objects.requireNonNull(executor, "executor");
+        Objects.requireNonNull(timeout, "timeout");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+                runForcedShutdownCallback(onForcedShutdown);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+            runForcedShutdownCallback(onForcedShutdown);
+        }
+    }
+
+    private static void runForcedShutdownCallback(Runnable onForcedShutdown) {
+        if (onForcedShutdown == null) return;
+        try { onForcedShutdown.run(); } catch (Throwable ignored) { }
     }
 
     private static ThreadFactory namedDaemonFactory(String name) {
