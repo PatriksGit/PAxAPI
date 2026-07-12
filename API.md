@@ -427,6 +427,8 @@ reloadCooldown.evictOlderThan(Duration.ofHours(1));
 - `duration` egy `Supplier<Duration>`, minden ellenőrzésnél frissen kiértékelve — configból élőben változtatható a hossz, a `CommandSpec`-fa újraépítése nélkül.
 - `onCooldown` kötelező (`Objects.requireNonNull`), ugyanúgy mint a `requires()`/`playerOnly()` `onFail`-je.
 - Ha a handler kivételt dob, a cooldown akkor is elhasználódik (gate-átengedéskor rögzít, a handler előtt).
+- ⚠️ Ha saját (nem Paper/Velocity) `SenderAdapter`-t írsz és `.cooldown()`-t is használsz, kötelező felülírni az `identity()`-t — a default implementáció mindenkinek `null`-t ad vissza, ami **csendben, hibaüzenet nélkül** kikapcsolja a cooldownt mindenkire nézve.
+- ⚠️ A `duration` Supplier soha ne adjon vissza `null`-t — a `tryAcquire` ezt `NullPointerException`-nel jelzi, amit a dispatcher elkap és — ha nincs `onError` beállítva — csendben elnyel, így a parancs látszólag "beragad" válasz nélkül.
 
 ### `CommandContext`
 

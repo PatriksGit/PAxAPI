@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CooldownTrackerTest {
@@ -110,5 +111,25 @@ class CooldownTrackerTest {
         assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
 
         assertEquals(1, acquired.get(), "exactly one thread should have acquired the shared key");
+    }
+
+    // A caller-supplied Duration Supplier that misbehaves (e.g. a config lookup returning null)
+    // must fail loudly here, not deep inside Duration.plus(null) with a cryptic NPE — and
+    // CommandDispatcher.checkCooldown wraps tryAcquire in a catch-all that silently swallows any
+    // exception without an onError callback configured, so a clear message here is the only
+    // thing standing between this failure and a silently "stuck" command.
+    @Test void tryAcquireRejectsNullKey() {
+        CooldownTracker tracker = new CooldownTracker();
+        assertThrows(NullPointerException.class, () -> tracker.tryAcquire(null, Duration.ofSeconds(1)));
+    }
+
+    @Test void tryAcquireRejectsNullCooldown() {
+        CooldownTracker tracker = new CooldownTracker();
+        assertThrows(NullPointerException.class, () -> tracker.tryAcquire("k", null));
+    }
+
+    @Test void evictOlderThanRejectsNullAge() {
+        CooldownTracker tracker = new CooldownTracker();
+        assertThrows(NullPointerException.class, () -> tracker.evictOlderThan(null));
     }
 }

@@ -3,6 +3,7 @@ package hu.patriksgit.paxapi.command;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -29,6 +30,8 @@ public final class CooldownTracker {
      * @return {@link Duration#ZERO} if acquired; otherwise the remaining wait time (positive).
      */
     public Duration tryAcquire(String key, Duration cooldown) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(cooldown, "cooldown");
         Instant now = clock.instant();
         Instant[] blockedAnchor = new Instant[1]; // non-null iff blocked; holds the OLD (unchanged) timestamp
 
@@ -46,6 +49,7 @@ public final class CooldownTracker {
 
     /** Caller-scheduled cleanup — no internal thread (library never spawns threads). */
     public void evictOlderThan(Duration age) {
+        Objects.requireNonNull(age, "age");
         Instant cutoff = clock.instant().minus(age);
         lastUse.entrySet().removeIf(e -> e.getValue().isBefore(cutoff));
     }
