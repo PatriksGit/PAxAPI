@@ -346,12 +346,11 @@ boolean has = config.contains("optional-feature.enabled");  // true, ha a kulcs 
 
 ### Mit tud
 - Egy `CommandSpec<S>` fát írsz meg egyszer, generikusan a sender-típusra (`S`) — ugyanaz a leírás Paper-en (`CommandSender`) és Velocity-n (`CommandSource`) is működik a megfelelő adapterrel
-- Beépített: permission-check, requirement-predicate, player-only gate, alias-kezelés, tab-completion, hiba-routing (`onError`/`onDenied`/`onUnknown`)
+- Beépített: permission-check, requirement-predicate, player-only gate, per-key cooldown gate (`CooldownTracker`), alias-kezelés, tab-completion, hiba-routing (`onError`/`onDenied`/`onUnknown`)
 - Minden infrastruktúra-hívás (permission/requirement/playerOnly check, és minden callback) védett — egy dobó `SenderAdapter` implementáció vagy egy dobó callback sem tudja lefagyasztani/kicsapni a dispatchert
 - **Szándékos kivétel**: ha a HANDLERED dob egy kivételt és nincs `onError` beállítva, az **propagál** (nem nyeli el csendben) — hogy a handler-bugok látszódjanak a szerver logban, ne tűnjenek el nyomtalanul
 
 ### Mit NEM tud
-- Nincs beépített cooldown/rate-limiting hook
 - Nincs beépített async execution support (a handler szinkron fut a hívó szálon — Velocity-n ez lehet a network thread, Paper-en a main thread)
 - Nincs strukturált argumentum-parsing helper (csak `String[] args`-t kapsz, saját magadnak kell parse-olnod)
 - `CommandSpec.Builder.group()` nem detektál minden ütközést: ha egy új alias megegyezik egy MEGLÉVŐ testvér KANONIKUS nevével, azt **szándékosan** nem dobja hibaként — a kanonikus név mindig nyer, a regisztrálás sorrendjétől függetlenül (ez tesztelt, dokumentált viselkedés, nem bug)
@@ -395,11 +394,39 @@ Builder-metódusok:
 - `.aliases(String... )` / `.aliasesFrom(List<String>)` — utóbbi kifejezetten configból jövő alias-listákhoz (**nem** overload, külön névvel, mert egy `aliases(List<String>)` overload minden meglévő `.aliases(null)` hívást ambiguous compile error-rá tenne)
 - `.requires(Predicate<S> pred, Consumer<S> onFail)` — custom gate; ⚠️ Velocity-n a predicate **tab-completion alatt async szálon is fut**, legyen thread-safe
 - `.playerOnly(Consumer<S> onFail)`
+- `.cooldown(CooldownTracker tracker, Supplier<Duration> duration, BiConsumer<S,Duration> onCooldown)` — per-key (sender-identitás alapú) cooldown gate; csak `execute()`-ban fogyasztódik, `complete()`/tab-completion sosem consumálja; ld. lentebb
 - `.handler(CommandHandler<S>)` — mit csináljon a végén
 - `.sub(String name, CommandHandler<S>)` — rövidítés `.group(name, b -> b.handler(h))`-ra
 - `.group(String name, Consumer<Builder<S>> child)` — egymásba ágyazható alparancsok
 - `.arg(int index, ArgumentCompleter<S>)` — tab-completion egy adott pozícióra
 - `.onDenied(Consumer<S>)` / `.onUnknown(BiConsumer<S,String>)` / `.onError(BiConsumer<S,Throwable>)` — a fába lefelé "öröklődnek" (a legutolsó nem-null beállítás nyer az adott ágon)
+
+### Cooldown gate (`.cooldown()` + `CooldownTracker`)
+
+A `CooldownTracker` egy önálló, sender-identitás alapú, per-kulcs cooldown-nyilvántartó. Egy tracker egy parancshoz tartozik — te hozod létre és tartod életben (pl. egy plugin-mezőben), és te ütemezed rá az `evictOlderThan(...)`-t, mert a lib sosem indít saját szálat.
+
+```java
+CooldownTracker reloadCooldown = new CooldownTracker();
+
+CommandSpec<CommandSender> spec = CommandSpec.<CommandSender>root("mineauth")
+    .sub("reload", ctx -> { /* ... */ })
+    .group("setspawn", g -> g
+        .cooldown(reloadCooldown, () -> Duration.ofSeconds(config.getInt("setspawn-cooldown-seconds", 5)),
+            (sender, remaining) -> sender.sendMessage("Várj még " + remaining.toSeconds() + " másodpercet!"))
+        .handler(ctx -> { /* ... */ }))
+    .build();
+
+// máshol, periodikusan (pl. a saját scheduleredből):
+reloadCooldown.evictOlderThan(Duration.ofHours(1));
+```
+
+- A kulcs a `SenderAdapter.identity(S)` — `PaperSenderAdapter`/`VelocitySenderAdapter` játékosnál a `UUID.toString()`-ot adja, egyébként (konzol, command block, RCON) `null`-t. **Null identitás = mentesülés a cooldown alól**, nem közös vödör.
+- A cooldown **csak `CommandDispatcher.execute()`-ben fogyasztódik** — `complete()` (tab-completion) sosem érinti, még akkor sem, ha Velocity-n a `requires()`-hez hasonlóan off-thread fut.
+- A gate-sorrend utolsó tagja: `permission` → `requirement` → `playerOnly` → `cooldown`. Egy megtagadott próbálkozás (bármelyik korábbi gate-en) sosem fogyasztja el a cooldownt.
+- Egy blokkolt próbálkozás **nem** tolja el az ablakot — a cooldown mindig az utolsó ENGEDÉLYEZETT használattól számít.
+- `duration` egy `Supplier<Duration>`, minden ellenőrzésnél frissen kiértékelve — configból élőben változtatható a hossz, a `CommandSpec`-fa újraépítése nélkül.
+- `onCooldown` kötelező (`Objects.requireNonNull`), ugyanúgy mint a `requires()`/`playerOnly()` `onFail`-je.
+- Ha a handler kivételt dob, a cooldown akkor is elhasználódik (gate-átengedéskor rögzít, a handler előtt).
 
 ### `CommandContext`
 
