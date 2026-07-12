@@ -229,4 +229,14 @@ class ConfigWriterTest {
         Path file = tempDir.resolve("worlds.yml");
         assertThrows(NullPointerException.class, () -> ConfigWriter.upsertMissing(file, Map.of("a", "b"), null));
     }
+
+    // Matches ConfigFile.readYaml's setAllowDuplicateKeys(false) strictness — ConfigWriter and
+    // ConfigFile now round-trip the same side-files, so a duplicated root key must be rejected
+    // the same way on both the read and write-back paths, not silently last-one-wins here.
+    @Test void upsertMissingThrowsConfigExceptionOnDuplicateKeys() throws IOException {
+        Path file = tempDir.resolve("worlds.yml");
+        Files.writeString(file, "world: 1\nworld: 2\n");
+
+        assertThrows(ConfigException.class, () -> ConfigWriter.upsertMissing(file, Map.of("a", "b"), LOG));
+    }
 }

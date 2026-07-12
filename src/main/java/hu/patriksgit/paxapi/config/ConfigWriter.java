@@ -88,7 +88,9 @@ public final class ConfigWriter {
         try (InputStream in = Files.newInputStream(file)) {
             Object parsed;
             try {
-                parsed = new Yaml(new SafeConstructor(new LoaderOptions())).load(in);
+                LoaderOptions opts = new LoaderOptions();
+                opts.setAllowDuplicateKeys(false);
+                parsed = new Yaml(new SafeConstructor(opts)).load(in);
             } catch (YAMLException e) {
                 throw new ConfigException("Malformed YAML in " + file + " (see cause for details)", e);
             }
