@@ -1,6 +1,7 @@
 package hu.patriksgit.paxapi.command;
 
 import org.junit.jupiter.api.Test;
+import java.time.Duration;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -145,5 +146,18 @@ class CommandDispatcherCompleteTest {
         FakeSender s = FakeSender.player();
         List<String> suggestions = new CommandDispatcher<>(spec, flaky).complete(s, new String[]{""});
         assertEquals(List.of("reload"), suggestions);
+    }
+
+    @Test void tabCompletionDoesNotConsumeCooldown() {
+        CooldownTracker tracker = new CooldownTracker();
+        CommandSpec<FakeSender> spec = CommandSpec.<FakeSender>root("x")
+            .cooldown(tracker, () -> Duration.ofMinutes(10), (s, remaining) -> s.events.add("cooldown"))
+            .handler(ctx -> ctx.sender().events.add("handled"))
+            .build();
+        FakeSender s = FakeSender.player();
+        CommandDispatcher<FakeSender> d = dispatcher(spec);
+        for (int i = 0; i < 5; i++) d.complete(s, new String[]{""}); // repeated tab-completion must never touch the tracker
+        d.execute(s, "x", new String[0]);
+        assertEquals(List.of("handled"), s.events);
     }
 }

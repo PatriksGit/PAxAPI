@@ -1,5 +1,6 @@
 package hu.patriksgit.paxapi.command;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -45,6 +46,7 @@ public final class CommandDispatcher<S> {
             if (n.permission() != null && !gate(() -> adapter.hasPermission(sender, n.permission()), effDenied, sender, effError)) return;
             if (n.requirement() != null && !gate(() -> n.requirement().test(sender), n.onRequirementFail(), sender, effError)) return;
             if (n.playerOnly() && !gate(() -> adapter.isPlayer(sender), n.onPlayerOnlyFail(), sender, effError)) return;
+            if (n.cooldownTracker() != null && !checkCooldown(n, sender, effError)) return;
 
             if (i < args.length) {
                 String token = args[i].toLowerCase(Locale.ROOT);
@@ -91,6 +93,28 @@ public final class CommandDispatcher<S> {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Fourth gate, cooldown-specific: unlike {@link #gate}, the check itself has a side effect
+     * (it records a use), so it cannot reuse gate()'s BooleanSupplier shape — it needs its own
+     * Duration-based decision. Mirrors gate()'s error handling (any Throwable routes to onError,
+     * else is swallowed).
+     */
+    private boolean checkCooldown(CommandSpec<S> n, S sender, BiConsumer<S, Throwable> effError) {
+        try {
+            String key = adapter.identity(sender);
+            if (key == null) return true; // no identity -> exempt
+
+            Duration remaining = n.cooldownTracker().tryAcquire(key, n.cooldownDuration().get());
+            if (remaining.isZero() || remaining.isNegative()) return true; // acquired
+
+            guard(() -> n.onCooldown().accept(sender, remaining), effError, sender);
+            return false;
+        } catch (Throwable t) {
+            guardThrowable(effError, sender, t);
+            return false;
+        }
     }
 
     /** Guards an infrastructure call: routes any thrown Throwable to onError (if set), else swallows it. */
