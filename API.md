@@ -2,13 +2,14 @@
 
 Megosztott Java library Paper és Velocity Minecraft pluginokhoz. Cél: az adatbázis-kapcsolat, a config-betöltés, a parancs-regisztráció, a hang lejátszás és a szöveg-formázás ismétlődő, hibalehetőségekkel teli boilerplate-jét egyszer megírni, jól tesztelve, és minden plugin ugyanazt a (kikeményített) implementációt használja.
 
-Package: `hu.patriksgit.paxapi`. Öt modulra oszlik:
+Package: `hu.patriksgit.paxapi`. Hat modulra oszlik:
 
 | Modul | Package | Mire jó |
 |---|---|---|
 | [Database](#database-modul) | `hu.patriksgit.paxapi.database` | MySQL + HikariCP kapcsolatkezelés, query helperek |
 | [Config](#config-modul) | `hu.patriksgit.paxapi.config` | YAML config betöltés, típusos getterek |
 | [Command](#command-modul) | `hu.patriksgit.paxapi.command` | Platform-független parancsfa (Paper + Velocity) |
+| [Concurrent](#concurrent-modul) | `hu.patriksgit.paxapi.concurrent` | Named daemon executor-ok + graceful shutdown helper |
 | [Sound](#sound-modul) | `hu.patriksgit.paxapi.sound` | Egysoros hanglejátszás mindkét platformon |
 | [Text](#text-modul) | `hu.patriksgit.paxapi.text` | Szín/formázás/placeholder/messages.yml kezelés |
 
@@ -21,9 +22,10 @@ Minden modul **platform-független** ott, ahol lehet (Database, Config, Text ala
 1. [Database modul](#database-modul)
 2. [Config modul](#config-modul)
 3. [Command modul](#command-modul)
-4. [Sound modul](#sound-modul)
-5. [Text modul](#text-modul)
-6. [Összefoglaló: mit NEM tud a PAxAPI](#összefoglaló-mit-nem-tud-a-paxapi)
+4. [Concurrent modul](#concurrent-modul)
+5. [Sound modul](#sound-modul)
+6. [Text modul](#text-modul)
+7. [Összefoglaló: mit NEM tud a PAxAPI](#összefoglaló-mit-nem-tud-a-paxapi)
 
 ---
 
@@ -508,6 +510,38 @@ CommandSpec.<CommandSender>root("mineauth")
 
 ---
 
+## Concurrent modul
+
+`hu.patriksgit.paxapi.concurrent` — named daemon-thread executor konstrukció + egységes graceful-shutdown helper. Nem egy saját executor-wrapper típus: a hívó továbbra is sima `ExecutorService`/`ScheduledExecutorService`-t kap és tart (pl. hogy közvetlenül átadhassa a `Database.watchConnection(ScheduledExecutorService, ...)`-nek).
+
+### Mit tud
+- `ManagedExecutors.fixed(namePrefix, poolSize)` / `.singleThread(name)` / `.singleThreadScheduled(name)` — named, daemon szálú executor-ok, ugyanazzal a mintával, amit eddig minden hívó kézzel írt meg (`ThreadFactory` + daemon flag)
+- `ManagedExecutors.shutdownGracefully(executor, timeout, onForcedShutdown)` — `shutdown()` → `awaitTermination(timeout)` → ha nem drainelt (vagy a várakozás megszakad), `shutdownNow()` + opcionális callback; sosem dob kifelé
+
+### Mit NEM tud
+- Nincs automatikus pool-mérethez sizing-heurisztika a `fixed()`-ben — a workload jellege (CPU-bound vs I/O-bound) a hívó döntése, a méretet mindig explicit kell megadni
+- Nincs saját `ManagedExecutor` wrapper-típus — a nyers JDK típusokat kapod vissza, hogy a meglévő interop (pl. `watchConnection`) ne törjön
+- Nincs thread-priority, rejection-policy vagy queue-capacity konfiguráció
+
+### `ManagedExecutors` — factory-k + graceful shutdown
+
+```java
+ExecutorService authExecutor = ManagedExecutors.fixed("PAxAuth-Async", Math.max(2, Runtime.getRuntime().availableProcessors()));
+ScheduledExecutorService dbWatchdog = ManagedExecutors.singleThreadScheduled("PAxAuth-DB-Watchdog");
+
+// onDisable() / onShutdown()-ban:
+ManagedExecutors.shutdownGracefully(authExecutor, Duration.ofMillis(500),
+    () -> log.warn("Auth executor did not drain in time — forced shutdownNow."));
+ManagedExecutors.shutdownGracefully(dbWatchdog, Duration.ofMillis(500), null); // néma, mint eddig
+```
+
+- `onForcedShutdown` **nullable** — `null` = néma `shutdownNow()`, nincs callback
+- A callback mindkét ágon lefut: ha lejár a `timeout`, ÉS ha a várakozás közben megszakad (`InterruptedException`) — mindkettő "forced shutdown" esemény
+- A megszakítás-kezelés (`Thread.currentThread().interrupt()` + `shutdownNow()`) a helperben él, nem kell a hívónak újraírnia
+- `shutdownGracefully` sosem dob kifelé — egy dobó `onForcedShutdown` callback sem tudja megakasztani a többi cleanup-lépést egy `onDisable()`/`onShutdown()` láncban
+
+---
+
 ## Sound modul
 
 `hu.patriksgit.paxapi.sound` — egysoros hang-lejátszás. `PaperSounds` Bukkit `Player`-re, `VelocitySounds` Velocity `Player`-re (Adventure `Sound`-on keresztül).
@@ -710,7 +744,8 @@ Gyors áttekintés azoknak a limitációknak, amikre a fejlesztés során bukkan
 
 - **Database**: csak MySQL; nincs config-migráció a `DatabaseConfig`-hoz; nincs beépített schema-verzió-követés; a library sosem indít saját szálat (minden async metódus a TE `Executor`-odat várja)
 - **Config**: nincs write-back (csak olvasás); nincs migráció régi configokhoz (egy új `require()`-elt kulcs egy régi configon induláskor elhal, amíg valaki manuálisan nem frissíti)
-- **Command**: nincs cooldown/rate-limit hook; nincs async handler-execution támogatás; nincs strukturált argumentum-parser (csak `String[]`)
+- **Command**: nincs async handler-execution támogatás; nincs strukturált argumentum-parser (csak `String[]`)
+- **Concurrent**: nincs automatikus pool-mérethez sizing-heurisztika; nincs saját `ManagedExecutor` wrapper-típus; nincs thread-priority/rejection-policy/queue-capacity konfiguráció
 - **Sound**: nincs volume/pitch clamp; nincs per-player mute/toggle hook; nincs fallback sound key
 - **Text**: nincs `TextUtil.broadcast()` ad-hoc helperre (csak `MessagesFile.broadcast()` kulcs-alapon); a `get`/`getList`/`formatChat` nem futtatja a külső placeholder-expandert
 
