@@ -9,4 +9,7 @@ public final class PaperSenderAdapter implements SenderAdapter<CommandSender> {
     private PaperSenderAdapter() {}
     @Override public boolean hasPermission(CommandSender sender, String permission) { return sender.hasPermission(permission); }
     @Override public boolean isPlayer(CommandSender sender) { return sender instanceof Player; }
+    @Override public String identity(CommandSender sender) {
+        return sender instanceof Player p ? p.getUniqueId().toString() : null;
+    }
 }

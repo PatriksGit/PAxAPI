@@ -9,4 +9,7 @@ public final class VelocitySenderAdapter implements SenderAdapter<CommandSource>
     private VelocitySenderAdapter() {}
     @Override public boolean hasPermission(CommandSource sender, String permission) { return sender.hasPermission(permission); }
     @Override public boolean isPlayer(CommandSource sender) { return sender instanceof Player; }
+    @Override public String identity(CommandSource sender) {
+        return sender instanceof Player p ? p.getUniqueId().toString() : null;
+    }
 }
