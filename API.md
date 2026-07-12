@@ -263,9 +263,9 @@ Sql.TxBody<Void> body = c -> { /* ... */ return null; };
 - Ciklus-detektálás önhivatkozó YAML anchor/alias ellen (nem omlik össze egy `a: &x\n loop: *x` mintájú configon)
 
 ### Mit NEM tud
-- **Nincs write-back** — csak olvas, nem tud visszaírni a fájlba
 - **Nincs config-migráció** — ha egy plugin frissítéskor egy új kötelező kulcsot vár, egy régi, hiányos configon a `require(...)` hívás elhal induláskor, amíg valaki manuálisan nem frissíti a fájlt
 - Nincs `Set`/`byte[]`/`Date` (YAML `!!set`/`!!binary`/`!!timestamp`) natívan visszaadó getter — ezek elméletileg átjutnának a mély-immutabilizáción felöltetlenül, de jelenleg nincs public getter, ami ezeket kiadná
+- `ConfigFile` maga továbbra is csak olvas — az írás a külön `ConfigWriter` osztály dolga (lásd lentebb), a human-edited `config.yml` in-place, comment-preserving szerkesztése pedig szándékosan nincs támogatva
 
 ### Betöltés
 
@@ -339,6 +339,44 @@ boolean has = config.contains("optional-feature.enabled");  // true, ha a kulcs 
 ### `ConfigException`
 
 `IOException` leszármazott — kötelező kulcs hiánya vagy hibás YAML esetén dobódik (`require()`, vagy magából a `load()`-ból malformed YAML esetén).
+
+### `ConfigWriter` — write-back machine-managed side-file-okhoz
+
+Külön osztály `ConfigFile` mellett (nem azon), mert `ConfigFile`-nak immutable-nek KELL maradnia. A human-edited `config.yml` in-place, comment-preserving szerkesztése szándékosan NINCS támogatva (egy YAML dump csendben eldobná az összes kommentet) — a `ConfigWriter` mindig egy külön, gépileg kezelt side-fájlba ír (pl. `auth-spawn.yml`, `worlds.yml`), sosem magába a `config.yml`-be.
+
+```java
+// Teljes felülírás — a hívó adja a KOMPLETT kívánt dokumentumot:
+Map<String, Object> data = new LinkedHashMap<>();
+data.put("world", "spawn_world");
+data.put("x", 100.5);
+ConfigWriter.save(dataDir.resolve("auth-spawn.yml"), data);
+
+// Fejléc-kommenttel:
+ConfigWriter.save(dataDir.resolve("maintenance.yml"), data, "# Ezt a fájlt a plugin automatikusan írja.\n");
+
+// Idempotens hiányzó-kulcs-pótlás — csak az ÚJ kulcsokat adja hozzá, a meglévőket érintetlenül hagyja:
+Map<String, Object> discovered = new LinkedHashMap<>();
+for (World w : Bukkit.getWorlds()) {
+    Map<String, Object> defaults = new LinkedHashMap<>();
+    defaults.put("enderpearl-cooldown", 16);
+    defaults.put("totems-enabled", true);
+    discovered.put(w.getName(), defaults);
+}
+Set<String> added = ConfigWriter.upsertMissing(dataDir.resolve("worlds.yml"), discovered, logger);
+if (!added.isEmpty()) {
+    sender.sendMessage("Új világ(ok) hozzáadva: " + String.join(", ", added));
+}
+```
+
+- `save(file, data)` — **teljes felülírás**, nem részleges merge. Atomikus (`.tmp` + `ATOMIC_MOVE` + `REPLACE_EXISTING`), létrehozza a szülő könyvtárat, ha hiányzik.
+- `save(file, data, headerComment)` — ugyanaz, plusz `headerComment` nyers szövegként a YAML dump elé kerül. `headerComment` nem lehet `null` — ha nem kell fejléc, a 2-argumentumos overloadot használd.
+- `upsertMissing(file, candidates, logger)` — betölti a fájlt (ha nincs, üresről indul), a `candidates` minden kulcsát, ami MÉG NINCS jelen, hozzáadja; a meglévő kulcsokat — akár `null` értékűek is — érintetlenül hagyja. Csak akkor ír fájlt, ha tényleg volt hozzáadás. Visszaadja a ténylegesen hozzáadott kulcsok halmazát (megőrzött sorrenddel).
+
+### Mit NEM tud (ConfigWriter)
+- Nincs comment-preserving in-place `config.yml` szerkesztés — mindig egy külön, gépileg kezelt side-fájlba ír
+- `upsertMissing` nem támogat section-path/dot-notation-t — csak gyökér-szintű kulcsokkal dolgozik
+- `upsertMissing` `candidates`-ének értékei nem lehetnek `null`
+- Nincs beépített concurrency-védelem — párhuzamos írók esetén a hívónak kell szinkronizálnia
 
 ---
 
@@ -743,7 +781,7 @@ Lásd fent, `TextUtil.setExpander(...)`-nél.
 Gyors áttekintés azoknak a limitációknak, amikre a fejlesztés során bukkantunk / amiket tudatosan nem oldottunk meg (mert szűk használati esetre lett volna, vagy mert a jelenlegi kód biztonságosabb nélküle):
 
 - **Database**: csak MySQL; nincs config-migráció a `DatabaseConfig`-hoz; nincs beépített schema-verzió-követés; a library sosem indít saját szálat (minden async metódus a TE `Executor`-odat várja)
-- **Config**: nincs write-back (csak olvasás); nincs migráció régi configokhoz (egy új `require()`-elt kulcs egy régi configon induláskor elhal, amíg valaki manuálisan nem frissíti)
+- **Config**: `ConfigFile` maga csak olvas — az írás a `ConfigWriter` osztály dolga (teljes felülírás + idempotens hiányzó-kulcs-pótlás, mindig egy külön gépi side-fájlba, sosem a human-edited config.yml-be); nincs migráció régi configokhoz (egy új `require()`-elt kulcs egy régi configon induláskor elhal, amíg valaki manuálisan nem frissíti); nincs comment-preserving in-place config.yml szerkesztés
 - **Command**: nincs async handler-execution támogatás; nincs strukturált argumentum-parser (csak `String[]`)
 - **Concurrent**: nincs automatikus pool-mérethez sizing-heurisztika; nincs saját `ManagedExecutor` wrapper-típus; nincs thread-priority/rejection-policy/queue-capacity konfiguráció
 - **Sound**: nincs volume/pitch clamp; nincs per-player mute/toggle hook; nincs fallback sound key
