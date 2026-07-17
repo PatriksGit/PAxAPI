@@ -26,6 +26,14 @@ class TablePrefixTest {
         assertThrows(IllegalArgumentException.class, () -> TablePrefix.validate("pax'; DROP TABLE x; --", 20));
     }
 
+    @Test void rejectsLeadingDigit() {
+        // A leading digit would pass here but fail later, mid-migration, against
+        // Database's stricter SAFE_IDENT ([A-Za-z_][A-Za-z0-9_]*) — reject it up front
+        // instead of letting the operator hit a half-created-table-set failure.
+        assertThrows(IllegalArgumentException.class, () -> TablePrefix.validate("9x", 20));
+        assertThrows(IllegalArgumentException.class, () -> TablePrefix.validate("2026_", 20));
+    }
+
     @Test void rejectsWhenCombinedLengthExceedsMysqlLimit() {
         // 64-char limit: a 50-char prefix + a 20-char base table name (70) must be rejected.
         String prefix = "p".repeat(50);

@@ -15,9 +15,12 @@ import java.util.regex.Pattern;
  */
 public final class TablePrefix {
 
-    // Same style as Database's SAFE_IDENT, but (unlike SAFE_IDENT) allows the empty string —
+    // Same shape as Database's SAFE_IDENT ([A-Za-z_][A-Za-z0-9_]*) — a leading digit
+    // would otherwise pass here but fail later, mid-migration, against SAFE_IDENT
+    // (e.g. ensureColumn), after tables have already been created under the
+    // now-untenable prefix. Unlike SAFE_IDENT, the empty string is also allowed —
     // that's the backward-compatible default meaning "no prefix".
-    private static final Pattern SAFE_PREFIX = Pattern.compile("[A-Za-z0-9_]*");
+    private static final Pattern SAFE_PREFIX = Pattern.compile("|[A-Za-z_][A-Za-z0-9_]*");
 
     /** MySQL's identifier length limit (table/column/index names), in characters. */
     private static final int MYSQL_IDENTIFIER_LIMIT = 64;
@@ -34,8 +37,10 @@ public final class TablePrefix {
      *                                    against MySQL's identifier limit up front
      * @return the trimmed, validated prefix
      * @throws IllegalArgumentException if {@code longestBaseTableNameLength} is negative, if the
-     *                                   prefix contains characters outside {@code [A-Za-z0-9_]},
-     *                                   or if {@code prefix.length() + longestBaseTableNameLength}
+     *                                   prefix is non-empty and doesn't match
+     *                                   {@code [A-Za-z_][A-Za-z0-9_]*} (in particular, a
+     *                                   leading digit is rejected), or if
+     *                                   {@code prefix.length() + longestBaseTableNameLength}
      *                                   exceeds 64
      */
     public static String validate(String rawPrefix, int longestBaseTableNameLength) {
@@ -46,7 +51,8 @@ public final class TablePrefix {
         String trimmed = rawPrefix == null ? "" : rawPrefix.trim();
         if (!SAFE_PREFIX.matcher(trimmed).matches()) {
             throw new IllegalArgumentException("Invalid table prefix '" + rawPrefix
-                + "' — only letters, digits and underscore are allowed (empty is fine — that means no prefix).");
+                + "' — must start with a letter or underscore, followed by letters, digits, or "
+                + "underscores (empty is fine — that means no prefix).");
         }
         // long arithmetic: guards against int overflow at the (unrealistic but not impossible)
         // extreme end, now that a negative length can no longer offset it the other way.

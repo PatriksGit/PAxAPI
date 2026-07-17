@@ -117,7 +117,29 @@ public final class SchemaPrefixGuard {
         }
     }
 
+    /**
+     * Wraps {@link #insertPrefixIfAbsentOnce} with a single retry for lock contention.
+     * On a brand-new database, this is the very first row ever written to
+     * {@value #META_TABLE} for {@code component} — if two consumers (e.g. Paper and
+     * Velocity) start at nearly the same instant, MySQL's insert-intention locking on
+     * the same new primary key can make one side hit ER_LOCK_WAIT_TIMEOUT (1205) or
+     * ER_LOCK_DEADLOCK (1213), both transient and safely retryable on the same
+     * connection since the insert itself isn't broken, only contended. Any other
+     * {@link SQLException} propagates immediately, unretried.
+     */
     private static void insertPrefixIfAbsent(Connection c, String component, String configuredPrefix) throws SQLException {
+        try {
+            insertPrefixIfAbsentOnce(c, component, configuredPrefix);
+        } catch (SQLException e) {
+            if (e.getErrorCode() != 1205 && e.getErrorCode() != 1213) {
+                throw e;
+            }
+            try { Thread.sleep(2000); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            insertPrefixIfAbsentOnce(c, component, configuredPrefix);
+        }
+    }
+
+    private static void insertPrefixIfAbsentOnce(Connection c, String component, String configuredPrefix) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO " + META_TABLE + " (component, meta_key, meta_value) VALUES (?, ?, ?) "
                 + "ON DUPLICATE KEY UPDATE meta_value = meta_value")) {
