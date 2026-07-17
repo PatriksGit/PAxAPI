@@ -40,6 +40,7 @@ Minden modul **platform-független** ott, ahol lehet (Database, Config, Text ala
 - Health-check (`ping`) és periodikus kapcsolat-figyelő watchdog (`watchConnection`)
 - Biztonságos, injection-mentes DDL helperek (`ensureColumn`, `ensureIndex`, stb.)
 - PII-biztos hibaüzenetek (`DataAccessException`) — alapból nem loggol bound paraméter *értékeket*, csak típusokat
+- Tábla-prefix támogatás megosztott adatbázishoz (`TablePrefix`) + több-fogyasztós séma-konzisztencia guard (`SchemaPrefixGuard`)
 
 ### Mit NEM tud
 - **Csak MySQL** — nincs PostgreSQL, MariaDB, SQLite támogatás (bár a Connector/J-specifikus flagek miatt más MySQL-kompatibilis driverrel sem garantált a működés)
@@ -223,6 +224,41 @@ try (Connection c = db.getConnection()) {
 }
 ```
 ⚠️ **Trust-kontrakt**: a `table`/`column`/`definition`/`columns` argumentumok **fejlesztő-kontrollált literálok** kell legyenek, SOHA config- vagy felhasználói input — DDL-be vannak fűzve (identifier nem bindelhető JDBC paraméterként). Egy whitelist regex védi az injectiont, de ettől függetlenül kódnak kezeld, nem adatnak.
+
+#### Tábla-prefix megosztott adatbázishoz (`TablePrefix`, `SchemaPrefixGuard`)
+
+Ha több plugin (vagy egy plugin több folyamata, pl. Paper + Velocity) egy közös MySQL adatbázison osztozik, mindegyiknek saját táblanév-prefixre van szüksége, hogy ne ütközzenek a tábláik (pl. `paxauth_accounts`, `paxstaff_reports`).
+
+```java
+// Bootstrap fázisban, ELSŐKÉNT — a validáció itt kell fusson, mielőtt bármilyen SQL épülne
+// (a táblanév nem bindelhető JDBC paraméterként, tehát a prefix közvetlenül SQL-be lesz fűzve)
+String prefix = TablePrefix.validate(config.getString("table-prefix", ""), "accounts".length());
+String accountsTable = TablePrefix.resolve(prefix, "accounts");   // "" -> "accounts", "paxauth_" -> "paxauth_accounts"
+
+db.ensureColumn(c, accountsTable, "last_login", "BIGINT");
+db.update("INSERT INTO " + accountsTable + " (uuid, name) VALUES (?, ?)", ps -> { /* ... */ });
+```
+
+`TablePrefix.validate(rawPrefix, longestBaseTableNameLength)`:
+- trim, majd `[A-Za-z0-9_]*` whitelist (üres string is engedélyezett — ez a visszafelé-kompatibilis alapérték, "nincs prefix")
+- ellenőrzi, hogy `prefix.length() + longestBaseTableNameLength` nem lépi túl a MySQL 64 karakteres identifier-limitjét
+- fail-closed: `IllegalArgumentException`-t dob tiltott karakterre, negatív `longestBaseTableNameLength`-re, vagy limit-túllépésre
+
+`SchemaPrefixGuard.ensureConsistency(...)` — ha TÖBB fogyasztó osztozik egy DB-n, hívd meg induláskor, minden migráció ELŐTT, hogy egy config-elgépelés hangosan bukjon el, ne csendben csússzon szét két folyamat táblanézete:
+
+```java
+try (Connection c = db.getConnection()) {
+    SchemaPrefixGuard.ensureConsistency(c, "paxauth", prefix, Set.of("accounts")); // "accounts" = régi, prefix nélküli tábla
+    // ... utána a tényleges migrációk / ensureColumn hívások ...
+} catch (SQLException e) {
+    log.error("Séma-prefix inkonzisztencia: {}", e.getMessage());
+    throw e;   // induláskor állj le, ne fuss tovább rossz configgal
+}
+```
+- Egy közös, SOSEM prefixelt meta-táblát tart karban (`paxapi_schema_meta`), soronként egy `component`-tel (pl. `"paxauth"`, `"paxstaffutils"`) — így egy DB-n minden plugin a saját sora alatt regisztrálja a prefixét
+- Első indításkor regisztrálja a prefixet (idempotens, race-safe konkurens első-indításra is, pl. Paper+Velocity egyszerre indul); utána minden induláskor ellenőrzi, hogy a regisztrált érték egyezik-e a configureddal — eltérés esetén `SQLException`, benne melyik component és melyik két érték ütközik
+- **Legacy-védelem**: ha még nincs regisztrált sor a component-hez, ÉS a configurált prefix nem üres, ÉS a hívó által megadott `legacyUnprefixedTableNames` közül már létezik tábla ebben a sémában → `SQLException` (véd attól, hogy egy config-elgépelés árva, üres prefixelt táblákat hozzon létre élő, prefix nélküli adatok mellett)
+- A `legacyUnprefixedTableNames` halmazt a HÍVÓ adja meg — csak ő tudja, mely tábláit hívta régen prefix nélkül; nem tartalmazhat `null` elemet (`IllegalArgumentException`)
 
 #### `DataAccessException` — a hibatípus, amit el fogsz kapni
 
