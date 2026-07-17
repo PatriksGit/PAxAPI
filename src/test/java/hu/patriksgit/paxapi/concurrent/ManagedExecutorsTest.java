@@ -219,4 +219,34 @@ class ManagedExecutorsTest {
             exec.shutdownNow();
         }
     }
+
+    @Test void oversizedTimeoutDoesNotThrowArithmeticException() throws InterruptedException {
+        // Duration.toMillis() overflows (ArithmeticException) for a Duration this large; the
+        // method must clamp it instead of crashing. Executor is already idle/terminated so the
+        // (clamped) huge timeout doesn't actually make the test slow.
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        exec.shutdown();
+        assertTrue(exec.awaitTermination(5, TimeUnit.SECONDS));
+
+        AtomicBoolean forced = new AtomicBoolean(false);
+        // Duration.ofSeconds (unlike ofDays) doesn't multiply its unit into the overflow range
+        // at construction time, so this is the largest Duration constructible directly — and
+        // still large enough that toMillis() alone would overflow without the production clamp.
+        assertDoesNotThrow(() -> ManagedExecutors.shutdownGracefully(
+            exec, Duration.ofSeconds(Long.MAX_VALUE), () -> forced.set(true)));
+        assertFalse(forced.get());
+    }
+
+    @Test void hugeNegativeTimeoutDoesNotThrowArithmeticException() throws InterruptedException {
+        // Symmetric case to the one above: Duration.toMillis() overflows at the negative extreme
+        // too (e.g. Duration.ofSeconds(Long.MIN_VALUE)); the clamp must cover both directions.
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        exec.shutdown();
+        assertTrue(exec.awaitTermination(5, TimeUnit.SECONDS));
+
+        AtomicBoolean forced = new AtomicBoolean(false);
+        assertDoesNotThrow(() -> ManagedExecutors.shutdownGracefully(
+            exec, Duration.ofSeconds(Long.MIN_VALUE), () -> forced.set(true)));
+        assertFalse(forced.get());
+    }
 }

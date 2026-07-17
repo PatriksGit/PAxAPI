@@ -66,9 +66,21 @@ public final class ManagedExecutors {
     public static void shutdownGracefully(ExecutorService executor, Duration timeout, Runnable onForcedShutdown) {
         Objects.requireNonNull(executor, "executor");
         Objects.requireNonNull(timeout, "timeout");
+        // Duration.toMillis() throws ArithmeticException on overflow at EITHER extreme (a huge
+        // positive Duration, or a huge negative one like Duration.ofSeconds(Long.MIN_VALUE));
+        // clamp both ends instead so an oversized timeout can't crash this method (its own
+        // contract promises it never throws beyond the null-checks above).
+        long timeoutMillis;
+        if (timeout.compareTo(Duration.ofMillis(Long.MAX_VALUE)) > 0) {
+            timeoutMillis = Long.MAX_VALUE;
+        } else if (timeout.compareTo(Duration.ofMillis(Long.MIN_VALUE)) < 0) {
+            timeoutMillis = Long.MIN_VALUE;
+        } else {
+            timeoutMillis = timeout.toMillis();
+        }
         executor.shutdown();
         try {
-            if (!executor.awaitTermination(timeout.toMillis(), TimeUnit.MILLISECONDS)) {
+            if (!executor.awaitTermination(timeoutMillis, TimeUnit.MILLISECONDS)) {
                 executor.shutdownNow();
                 runForcedShutdownCallback(onForcedShutdown);
             }
