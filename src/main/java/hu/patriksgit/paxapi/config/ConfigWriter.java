@@ -108,19 +108,37 @@ public final class ConfigWriter {
     private static void writeAtomic(Path file, Map<String, Object> data, String headerComment) throws IOException {
         Path parent = file.getParent();
         if (parent != null) Files.createDirectories(parent);
-        Path tmpFile = parent != null
-            ? parent.resolve(file.getFileName().toString() + ".tmp")
-            : Path.of(file.getFileName().toString() + ".tmp");
+        // Unique per-call tmp name (not a fixed "file.yml.tmp"): this library documents "no
+        // built-in concurrency protection — the caller must synchronize concurrent writers" (an
+        // intentional scope boundary, not fixed here), but a SHARED tmp path made two concurrent
+        // writers interleave raw bytes into the same file before either atomic move — real
+        // corruption, strictly worse than the documented "last mover wins" race. A unique name
+        // keeps each writer's output whole; which writer's complete document ends up at `file`
+        // last is still the caller's problem, same as before.
+        String tmpName = file.getFileName().toString() + "." + java.util.UUID.randomUUID() + ".tmp";
+        Path tmpFile = parent != null ? parent.resolve(tmpName) : Path.of(tmpName);
 
         DumperOptions opts = new DumperOptions();
         opts.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
         opts.setPrettyFlow(true);
         Yaml yaml = new Yaml(opts);
 
-        try (Writer w = Files.newBufferedWriter(tmpFile, StandardCharsets.UTF_8)) {
-            if (headerComment != null) w.write(headerComment);
-            yaml.dump(data, w);
+        try {
+            try (Writer w = Files.newBufferedWriter(tmpFile, StandardCharsets.UTF_8)) {
+                if (headerComment != null) {
+                    w.write(headerComment);
+                    // Force a line break between the raw header and the YAML dump — without
+                    // this, a headerComment that doesn't already end in '\n' merges into the
+                    // dump's first line (e.g. "# headerkey: value"), silently corrupting the
+                    // document (the real key gets swallowed into the comment).
+                    if (!headerComment.endsWith("\n")) w.write(System.lineSeparator());
+                }
+                yaml.dump(data, w);
+            }
+            Files.move(tmpFile, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            // Move already deleted it on success; this only cleans up after a write/move failure.
+            Files.deleteIfExists(tmpFile);
         }
-        Files.move(tmpFile, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     }
 }

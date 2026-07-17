@@ -65,8 +65,12 @@ class ConfigWriterTest {
         Path file = tempDir.resolve("side.yml");
         ConfigWriter.save(file, Map.of("a", "b"));
 
-        Path tmpFile = tempDir.resolve("side.yml.tmp");
-        assertFalse(Files.exists(tmpFile));
+        // The tmp filename is randomized per call (not a fixed "side.yml.tmp"), so glob rather
+        // than check one exact path — either way, no leftover ".tmp" file should remain.
+        try (var files = Files.list(tempDir)) {
+            assertTrue(files.noneMatch(p -> p.getFileName().toString().endsWith(".tmp")),
+                "no leftover .tmp file should remain after a successful save");
+        }
     }
 
     @Test void saveCreatesParentDirectoriesIfMissing() throws IOException {
@@ -85,6 +89,17 @@ class ConfigWriterTest {
 
         String content = Files.readString(file);
         assertTrue(content.startsWith(header), "expected header at the start, got: " + content);
+    }
+
+    @Test void saveWithHeaderCommentMissingTrailingNewlineDoesNotCorruptFirstKey() throws IOException {
+        Path file = tempDir.resolve("side.yml");
+        // Deliberately NO trailing '\n' — without the fix this merges into the dump's first
+        // line ("# no newline herea: b"), swallowing the "a" key into the comment.
+        String header = "# no newline here";
+        ConfigWriter.save(file, Map.of("a", "b"), header);
+
+        ConfigFile cfg = ConfigFile.load(file, LOG);
+        assertEquals("b", cfg.getString("a", "MISSING"), "key must survive a header with no trailing newline");
     }
 
     @Test void saveWithHeaderCommentRejectsNullHeaderComment() {
