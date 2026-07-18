@@ -188,6 +188,10 @@ public final class Database implements AutoCloseable {
         // ServiceLoader path; setting it loads the driver from the plugin's shaded classloader.
         hc.setJdbcUrl(jdbcUrl);
         hc.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        // Every consumer's CURRENT_TIMESTAMP/NOW() writes must land in UTC to match the
+        // serverTimezone=UTC read-side assumption above — otherwise a non-UTC MySQL session
+        // writes local wall-clock digits that get misread as UTC on the way back out.
+        hc.setConnectionInitSql("SET time_zone = '+00:00'");
         // Pin Connector/J blast-radius flags OFF. Safe on 8.3 defaults today, but this lib is
         // shaded into every plugin — explicit pins are immune to a future driver-default flip.
         // autoDeserialize (Java-object deser RCE via BLOB) was removed in Connector/J 8.x, so it
